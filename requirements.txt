@@ -3,3 +3,4 @@ uvicorn[standard]
 google-auth
 google-api-python-client
 PyYAML
+mcp>=2.0,<3.0

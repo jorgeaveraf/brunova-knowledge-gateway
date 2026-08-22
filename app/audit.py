@@ -68,6 +68,31 @@ def emit_audit_event(
     http_status: int,
     error_code: str | None = None,
 ) -> None:
+    emit_audit_record(
+        request_id=request.state.request_id,
+        action=action,
+        resource_id=resource_id,
+        resource_type=resource_type,
+        result=result,
+        http_status=http_status,
+        error_code=error_code,
+        source_id=getattr(request.state, "source_id", None),
+        source_classification=getattr(request.state, "classification", None),
+    )
+
+
+def emit_audit_record(
+    *,
+    request_id: str,
+    action: str,
+    resource_id: str | None,
+    resource_type: str | None,
+    result: str,
+    http_status: int,
+    error_code: str | None = None,
+    source_id: str | list[str] | None = None,
+    source_classification: str | list[str] | None = None,
+) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
         "true",
@@ -86,10 +111,10 @@ def emit_audit_event(
         "resource_type": resource_type,
         "result": result,
         "http_status": http_status,
-        "request_id": request.state.request_id,
-        "source_id": getattr(request.state, "source_id", None),
-        "classification": getattr(request.state, "classification", None),
-        "source_classification": getattr(request.state, "classification", None),
+        "request_id": request_id,
+        "source_id": source_id,
+        "classification": source_classification,
+        "source_classification": source_classification,
     }
     if error_code:
         event["error_code"] = error_code

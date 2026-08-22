@@ -12,15 +12,21 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura:
+Arquitectura v0.9:
 
 Agents
 ↓
+MCP Server / HTTP API
+↓
 Knowledge Gateway
+↓
+Source Registry y Policies
+↓
+Adapters
 ↓
 External Systems
 
-## Google Workspace (v0.6)
+## Google Workspace (v0.9)
 
 El adapter usa Application Default Credentials de Cloud Run y firma remota con
 IAM Credentials para crear credenciales delegadas, sin archivos de claves ni
@@ -38,6 +44,8 @@ Variables no secretas requeridas:
 - `WORKSPACE_BLOCKED_SOURCE_IDS` (recursos, carpetas o drives bloqueados)
 - `WORKSPACE_SOURCE_MAX_DEPTH` (profundidad máxima para resolver ancestros)
 - `WORKSPACE_AUDIT_ENABLED` (`true` o `false`)
+- `MCP_ALLOWED_HOSTS` (hosts exactos permitidos para Streamable HTTP)
+- `MCP_ALLOWED_ORIGINS` (opcional; solo para clientes MCP en navegador)
 
 La cuenta de runtime necesita `iam.serviceAccounts.signBlob` sobre sí misma
 (normalmente mediante `roles/iam.serviceAccountTokenCreator`). En Google
@@ -53,6 +61,12 @@ Endpoints:
 - `GET /sources/{source_id}`: devuelve metadata no sensible de una fuente.
 - `GET /sources/{source_id}/files?limit=10`: resuelve una fuente explícita,
   aplica `SourceAccessPolicy` y devuelve exclusivamente archivos de esa fuente.
+- `GET /sources/{source_id}/docs/{document_id}`: valida que el documento
+  pertenezca a la fuente indicada antes de leerlo.
+- `GET /sources/{source_id}/sheets/{spreadsheet_id}?range=A1:F10`: valida
+  pertenencia y `ContentReadPolicy` antes de leer el rango.
+- `GET /sources/discover?limit=25`: detecta candidatos de Shared Drives y
+  carpetas raíz, excluyendo ubicaciones registradas o bloqueadas. Solo propone.
 - `GET /workspace/status`: valida autenticación y acceso mediante una consulta
   mínima a Drive.
 - `GET /workspace/drive/list?limit=10`: devuelve hasta 100 archivos con `id`,
@@ -62,11 +76,12 @@ Endpoints:
   deprecado en OpenAPI; las integraciones nuevas deben seleccionar `source_id`.
 - `GET /workspace/docs/{document_id}`: devuelve metadata y texto con truncamiento
   controlado por `WORKSPACE_DOC_MAX_CHARS`, además de la fuente y su
-  clasificación.
+  clasificación. Se conserva temporalmente y está deprecado.
 - `GET /workspace/sheets/{spreadsheet_id}?range=A1:F10`: devuelve únicamente el
   rango A1 acotado solicitado. El parámetro `range` es obligatorio y la política
   rechaza rangos abiertos o mayores que `WORKSPACE_SHEET_MAX_CELLS`. La
-  respuesta incluye la fuente y su clasificación.
+  respuesta incluye la fuente y su clasificación. Se conserva temporalmente y
+  está deprecado.
 
 La lectura de metadata pasa por `DriveReadPolicy`; la lectura de contenido pasa
 por `ContentReadPolicy`. No existen endpoints de escritura, edición, creación,
@@ -116,6 +131,11 @@ adapter lea contenido. Una fuente `disabled` se rechaza. La clasificación aport
 contexto de gobierno: no concede acceso a clientes, no publica, no comparte y no
 implementa RBAC.
 
+Las lecturas source-scoped agregan una segunda comprobación: el recurso debe
+tener como ancestro la carpeta registrada o pertenecer al Shared Drive
+seleccionado. El acceso técnico de Google no es suficiente. Un mismatch devuelve
+`resource_not_in_source` antes de solicitar contenido a Docs o Sheets.
+
 ## Gobierno de acceso
 
 `SourceAccessPolicy` falla cerrada cuando no hay fuentes activas. El endpoint de
@@ -135,12 +155,35 @@ aplica. `source_classification` es el campo explícito de v0.6 y
 incluyen owners, texto de Docs, valores de Sheets, tokens, credenciales ni
 scopes.
 
-## Preparación para discovery
+## Source Discovery
 
-`app/source_discovery/interface.py` define únicamente contratos internos para
-`CandidateSource`, `SourceProposal`, `DiscoveryResult` y `SourceDiscovery`. No
-hay implementación conectada a Google Workspace, sincronización automática ni
-mutación del registry en v0.6.
+`SourceDiscovery` consulta de forma read-only Shared Drives visibles y carpetas
+raíz del usuario delegado. Genera `CandidateSource`, `SourceProposal` y una
+clasificación conservadora sugerida. La respuesta pública no contiene IDs de
+ubicación. Discovery nunca crea entradas, cambia clasificaciones ni modifica
+`sources.yaml`: discovery propone y el registry se aprueba por cambio versionado.
+
+## MCP
+
+El endpoint Streamable HTTP está montado en `/mcp` con MCP Python SDK 2.x,
+respuestas JSON, modo stateless para clientes legacy y protección contra DNS
+rebinding mediante `MCP_ALLOWED_HOSTS`. En Cloud Run permanece protegido por IAM.
+
+Tools disponibles:
+
+- `list_sources`: metadata no sensible del registry;
+- `list_source_documents`: documentos autorizados de una fuente, con filtro
+  opcional por nombre;
+- `retrieve_document`: lectura source-scoped de Google Docs;
+- `retrieve_sheet_range`: lectura source-scoped y acotada de Google Sheets.
+
+Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
+Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
+cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
+propagan como tool errors legibles. No existen tools de escritura.
+
+El SDK MCP 2.x requiere Python 3.10 o posterior. La imagen de Cloud Run usa
+Python 3.12.
 
 Las APIs de Drive, Docs, Sheets e IAM Service Account Credentials deben estar
 habilitadas en el proyecto de GCP.

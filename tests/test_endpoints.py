@@ -223,6 +223,13 @@ def test_workspace_status_response():
     assert response.headers["X-Correlation-ID"] == "test-request-123"
 
 
+def test_application_lifespan_starts_with_mcp_session_manager():
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+
+
 def test_drive_list_response():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy

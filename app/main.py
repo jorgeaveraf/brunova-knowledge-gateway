@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated
 
@@ -26,6 +27,7 @@ from app.knowledge import (
     retrieve_authorized_document,
     retrieve_authorized_sheet_range,
 )
+from app.mcp_server import mcp_http_app, mcp_server
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.policies.source_access import SourceAccessPolicy
 from app.source_discovery.google_workspace import GoogleWorkspaceSourceDiscovery
@@ -36,9 +38,17 @@ from app.source_discovery.interface import (
 )
 from app.source_registry import SourceRegistry, SourceRegistryMetadata
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    async with mcp_server.session_manager.run():
+        yield
+
+
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.8.0",
+    version="0.9.0",
+    lifespan=lifespan,
 )
 
 
@@ -211,7 +221,10 @@ def identity():
 def capabilities():
     return {
         "capabilities": [
-            "google_workspace"
+            "google_workspace",
+            "source_registry",
+            "source_discovery",
+            "mcp_read",
         ]
     }
 
@@ -422,3 +435,6 @@ def workspace_sheet_range(
             ),
         }
     )
+
+
+app.mount("/mcp", mcp_http_app)
