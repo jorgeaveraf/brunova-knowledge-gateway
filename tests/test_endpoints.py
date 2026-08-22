@@ -295,10 +295,19 @@ def test_sources_list_returns_only_safe_registry_metadata():
             "system": "google_workspace",
             "classification": "management_only",
             "status": "active",
+            "capabilities": {
+                "read": True,
+                "create": False,
+                "update": False,
+                "move": False,
+                "delete": False,
+                "share": False,
+            },
         }
     ]
     assert "owner" not in response.text
     assert "location_id" not in response.text
+    assert "allowed_folder_123" not in response.text
 
 
 def test_source_detail_returns_safe_metadata_and_missing_source_is_404():
@@ -313,6 +322,16 @@ def test_source_detail_returns_safe_metadata_and_missing_source_is_404():
     assert response.status_code == 200
     assert response.json()["id"] == "career_ops"
     assert response.json()["classification"] == "management_only"
+    assert response.json()["capabilities"] == {
+        "read": True,
+        "create": False,
+        "update": False,
+        "move": False,
+        "delete": False,
+        "share": False,
+    }
+    assert "location_id" not in response.text
+    assert "owner" not in response.text
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "source_not_found"
 

@@ -117,6 +117,7 @@ def emit_audit_record(
         "result": result,
         "http_status": http_status,
         "request_id": request_id,
+        "correlation_id": request_id,
         "source_id": source_id,
         "classification": source_classification,
         "source_classification": source_classification,

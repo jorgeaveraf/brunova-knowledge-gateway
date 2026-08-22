@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.13:
+Arquitectura v0.14:
 
 Agents
 ↓
@@ -74,6 +74,11 @@ Workspace Domain Wide Delegation, su Client ID debe tener autorizados:
 - `https://www.googleapis.com/auth/documents`
 - `https://www.googleapis.com/auth/spreadsheets`
 
+Para consultar el historial operacional, la misma identidad de runtime utiliza
+ADC sin delegación de Workspace y necesita `roles/logging.viewer` en el
+proyecto. Esta autorización permite al adapter consultar Cloud Logging; el
+consumidor MCP nunca recibe acceso directo a logs.
+
 Endpoints:
 
 - `GET /sources`: lista metadata no sensible de todas las fuentes registradas.
@@ -128,6 +133,10 @@ Para registrar una fuente nueva, se agrega una entrada completa con un `id` y
 un `location_id` únicos, se elige una de las cuatro clasificaciones y se valida
 la suite de tests antes de desplegar. El registro no contiene secretos. Los
 owners permanecen en configuración y no se exponen en endpoints ni auditoría.
+Las respuestas de `GET /sources`, `GET /sources/{source_id}` y `list_sources`
+sí incluyen la matriz booleana `capabilities`, que representa el contrato
+operacional aprobado del Gateway. No representa ACLs, permisos ni roles de
+Google Workspace y no expone `location_id`, owners o configuración de seguridad.
 
 El consumo explícito sigue este flujo:
 
@@ -173,7 +182,8 @@ un UUID. El ID se devuelve en el mismo header y en respuestas Workspace. Los
 eventos de auditoría se emiten como JSON de una sola línea con timestamp,
 servicio, actor, usuario delegado, acción, tipo e ID de recurso, resultado,
 status HTTP, request ID, `source_id`, clasificación y código de error cuando
-aplica. `source_classification` es el campo explícito de v0.6 y
+aplica. `correlation_id` conserva explícitamente el mismo identificador seguro
+del request para consultas operacionales. `source_classification` es el campo explícito de v0.6 y
 `classification` se conserva por compatibilidad con consumidores v0.5. Nunca
 incluyen owners, texto de Docs, valores de Sheets, tokens, credenciales ni
 scopes.
@@ -293,6 +303,9 @@ aplica en el middleware del Gateway antes de llegar al transporte MCP.
 Tools disponibles:
 
 - `list_sources`: metadata no sensible del registry;
+- `get_operation_history`: historial seguro de `create_source_artifact`,
+  `update_source_artifact` y `move_source_artifact`, filtrable por fuente u
+  operación y limitado a 50 resultados;
 - `discover_source_candidates`: propone Shared Drives y carpetas raíz no
   registradas, sin ejecutar cambios;
 - `get_source_candidate_details`: devuelve detalle seguro de un candidato por
@@ -318,6 +331,41 @@ cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy 
 propagan como tool errors legibles. Solo los tres tools de mutación anteriores
 escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
 herramientas de proposals solo persisten o consultan intenciones pendientes.
+
+## Historial operacional
+
+`get_operation_history` consulta los eventos estructurados del propio Gateway
+mediante un adapter read-only y ADC de Cloud Run. No ofrece acceso general a
+Cloud Logging ni una ruta administrativa paralela. La consulta acepta:
+
+- `source_id` opcional, que debe existir y continuar autorizado;
+- `operation` opcional, restringida a las tres mutaciones gobernadas;
+- `limit`, entre 1 y 50, con valor predeterminado 10.
+
+Ejemplo de resultado MCP:
+
+```json
+{
+  "operations": [
+    {
+      "timestamp": "2026-08-22T19:53:06Z",
+      "operation": "create_source_artifact",
+      "source_id": "brunova_template",
+      "result": "success",
+      "approval_reference": "decision-reference",
+      "request_id": "request-correlation-id",
+      "correlation_id": "request-correlation-id"
+    }
+  ],
+  "request_id": "history-query-request-id"
+}
+```
+
+El modelo de salida usa una lista explícita de campos permitidos. Descarta IDs
+de Drive, resource IDs, contenido, usuarios, delegated user, headers, tokens,
+credenciales y cualquier otro campo del evento original. La consulta misma
+requiere autenticación MCP, aplica el Source Registry y `SourceAccessPolicy`, y
+genera su propio evento de auditoría.
 
 ## Autenticación del Gateway
 
@@ -395,5 +443,5 @@ independiente para cada consumidor.
 El SDK MCP 2.x requiere Python 3.10 o posterior. La imagen de Cloud Run usa
 Python 3.12.
 
-Las APIs de Drive, Docs, Sheets e IAM Service Account Credentials deben estar
-habilitadas en el proyecto de GCP.
+Las APIs de Drive, Docs, Sheets, IAM Service Account Credentials y Cloud Logging
+deben estar habilitadas en el proyecto de GCP.

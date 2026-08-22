@@ -60,6 +60,7 @@ class SourceRegistryMetadata(BaseModel):
     system: Literal["google_workspace"]
     classification: Classification
     status: SourceStatus
+    capabilities: SourceCapabilities
 
     @classmethod
     def from_definition(cls, source: SourceDefinition) -> "SourceRegistryMetadata":
@@ -69,6 +70,7 @@ class SourceRegistryMetadata(BaseModel):
             system=source.system,
             classification=source.classification,
             status=source.status,
+            capabilities=source.capabilities,
         )
 
 

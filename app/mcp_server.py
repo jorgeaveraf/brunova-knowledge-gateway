@@ -19,6 +19,12 @@ from app.adapters.google_workspace.models import (
 )
 from app.audit import correlation_id, emit_audit_record
 from app.policies.content_mutation import ContentMutationPolicy
+from app.operation_history import (
+    DEFAULT_OPERATION_HISTORY_LIMIT,
+    GovernedOperation,
+    OperationHistoryEntry,
+    list_authorized_operation_history,
+)
 from app.knowledge import (
     discover_candidate_sources,
     create_authorized_source_artifact,
@@ -83,13 +89,19 @@ class SourceMutationToolResult(SourceArtifactMutationResult):
     request_id: str
 
 
+class OperationHistoryToolResult(BaseModel):
+    operations: list[OperationHistoryEntry]
+    request_id: str
+
+
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.13.0",
+    version="0.14.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
         "execute capability-gated Google Workspace mutations with an external "
-        "approval reference. No tool approves sources or mutates Source Registry."
+        "approval reference. Safe operation history is available without direct "
+        "log access. No tool approves sources or mutates Source Registry."
     ),
 )
 
@@ -177,6 +189,46 @@ def list_sources(ctx: Context) -> SourceListToolResult:
             request_id=request_id,
         ),
         resource_type="source_registry",
+    )
+
+
+@mcp_server.tool()
+def get_operation_history(
+    ctx: Context,
+    source_id: str | None = None,
+    operation: GovernedOperation | None = None,
+    limit: int = DEFAULT_OPERATION_HISTORY_LIMIT,
+) -> OperationHistoryToolResult:
+    """List safe governed-mutation audit metadata for authorized sources."""
+
+    def operation_query(
+        runtime: KnowledgeRuntime,
+        request_id: str,
+    ) -> OperationHistoryToolResult:
+        if runtime.operation_history_store is None:
+            raise WorkspaceAdapterError(
+                "operation_history_unavailable",
+                "Operation history is not configured.",
+                503,
+            )
+        return OperationHistoryToolResult(
+            operations=list_authorized_operation_history(
+                store=runtime.operation_history_store,
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                source_id=source_id,
+                operation=operation,
+                limit=limit,
+            ),
+            request_id=request_id,
+        )
+
+    return _execute_tool(
+        ctx=ctx,
+        action="get_operation_history",
+        operation=operation_query,
+        source_id=source_id,
+        resource_type="operation_history",
     )
 
 

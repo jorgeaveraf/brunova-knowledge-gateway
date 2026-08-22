@@ -90,6 +90,7 @@ def test_audit_event_contains_metadata_but_no_content(monkeypatch):
 
     event = json.loads(log_info.call_args.args[0])
     assert event["request_id"] == "request-123"
+    assert event["correlation_id"] == "request-123"
     assert event["actor"] == "gateway"
     assert event["delegated_user"] == "reader@example.com"
     assert event["action"] == "read_document"

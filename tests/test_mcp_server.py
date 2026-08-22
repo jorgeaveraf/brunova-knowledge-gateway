@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+from dataclasses import replace
 from unittest.mock import Mock
 
 from mcp import Client
@@ -14,6 +15,7 @@ from app.adapters.google_workspace.models import (
 from app.config.settings import Settings
 from app.policies.content_mutation import ContentMutationPolicy
 from app.policies.source_access import SourceAccessPolicy
+from app.operation_history import GovernedOperation, OperationHistoryEntry
 from app.runtime import KnowledgeRuntime
 from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
 from app.source_discovery.interface import (
@@ -244,7 +246,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_twelve_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_thirteen_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -266,6 +268,7 @@ def test_mcp_exposes_only_the_twelve_governed_tools(monkeypatch):
         "create_source_artifact",
         "update_source_artifact",
         "move_source_artifact",
+        "get_operation_history",
     }
 
 
@@ -561,6 +564,14 @@ def test_mcp_lists_sources_and_filters_authorized_documents(monkeypatch):
 
     assert sources.is_error is False
     assert sources.structured_content["sources"][0]["id"] == "career_ops"
+    assert sources.structured_content["sources"][0]["capabilities"] == {
+        "read": True,
+        "create": True,
+        "update": True,
+        "move": True,
+        "delete": False,
+        "share": False,
+    }
     assert documents.is_error is False
     assert [item["name"] for item in documents.structured_content["documents"]] == [
         "Career Roadmap"
@@ -598,6 +609,67 @@ def test_mcp_retrieval_tools_apply_source_and_content_policies(monkeypatch):
         call.kwargs.get("source_classification") == "management_only"
         for call in audit.call_args_list
     )
+
+
+def test_mcp_operation_history_filters_limits_and_audits(monkeypatch):
+    class FakeOperationHistoryStore:
+        def __init__(self):
+            self.calls = []
+
+        def list(self, *, source_id, operation, limit):
+            self.calls.append((source_id, operation, limit))
+            return [
+                OperationHistoryEntry(
+                    timestamp="2026-08-22T19:53:06Z",
+                    operation="create_source_artifact",
+                    source_id="career_ops",
+                    result="success",
+                    approval_reference="decision-v014-test",
+                    request_id="mutation-request-123",
+                    correlation_id="mutation-request-123",
+                )
+            ]
+
+    store = FakeOperationHistoryStore()
+    gateway_runtime = replace(runtime(), operation_history_store=store)
+    monkeypatch.setattr(
+        mcp_module,
+        "get_runtime_gateway",
+        lambda: gateway_runtime,
+    )
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "get_operation_history",
+                {
+                    "source_id": "career_ops",
+                    "operation": "create_source_artifact",
+                    "limit": 1,
+                },
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is False
+    assert store.calls == [
+        ("career_ops", GovernedOperation.CREATE_SOURCE_ARTIFACT, 5)
+    ]
+    assert result.structured_content["operations"] == [
+        {
+            "timestamp": "2026-08-22T19:53:06Z",
+            "operation": "create_source_artifact",
+            "source_id": "career_ops",
+            "result": "success",
+            "approval_reference": "decision-v014-test",
+            "request_id": "mutation-request-123",
+            "correlation_id": "mutation-request-123",
+        }
+    ]
+    assert audit.call_args.kwargs["action"] == "get_operation_history"
+    assert audit.call_args.kwargs["source_id"] == "career_ops"
 
 
 def test_mcp_propagates_resource_not_in_source_error(monkeypatch):

@@ -7,6 +7,7 @@ from app.adapters.google_workspace.docs import GoogleDocsAdapter
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
+from app.adapters.google_cloud_logging import CloudLoggingOperationHistoryStore
 from app.config.settings import Settings, get_settings
 from app.policies.source_access import SourceAccessPolicy
 from app.policies.content_mutation import ContentMutationPolicy
@@ -18,6 +19,7 @@ from app.source_proposal_store import (
     YamlSourceProposalStore,
 )
 from app.source_registry import SourceRegistry
+from app.operation_history import OperationHistoryStore
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class KnowledgeRuntime:
     source_discovery: SourceDiscovery
     proposal_store: SourceProposalStore
     mutation_policy: ContentMutationPolicy
+    operation_history_store: OperationHistoryStore | None = None
 
 
 @lru_cache
@@ -59,6 +62,7 @@ def get_runtime_gateway() -> KnowledgeRuntime:
                 )
             ),
             mutation_policy=ContentMutationPolicy(registry, source_policy),
+            operation_history_store=CloudLoggingOperationHistoryStore(),
         )
     except ValueError as error:
         raise WorkspaceAdapterError(

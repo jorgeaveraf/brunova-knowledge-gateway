@@ -41,6 +41,14 @@ def test_source_metadata_excludes_internal_registry_fields(tmp_path):
         "system": "google_workspace",
         "classification": "management_only",
         "status": "active",
+        "capabilities": {
+            "read": True,
+            "create": False,
+            "update": False,
+            "move": False,
+            "delete": False,
+            "share": False,
+        },
     }
 
 
