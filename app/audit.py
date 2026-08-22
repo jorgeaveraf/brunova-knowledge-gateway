@@ -36,7 +36,7 @@ def request_audit_context(request: Request) -> tuple[str | None, str | None, str
     if path == "/workspace/drive/list":
         return "list_files", None, "google_drive"
     if path == "/sources/discover":
-        return "discover_sources", None, "google_drive"
+        return "discover_source_candidates", None, "source_discovery"
     if path.startswith("/sources/") and path.endswith("/files"):
         return "list_files", None, "google_drive"
     if path.startswith("/sources/") and "/docs/" in path:
@@ -78,6 +78,7 @@ def emit_audit_event(
         error_code=error_code,
         source_id=getattr(request.state, "source_id", None),
         source_classification=getattr(request.state, "classification", None),
+        candidate_count=getattr(request.state, "candidate_count", None),
     )
 
 
@@ -93,6 +94,7 @@ def emit_audit_record(
     source_id: str | list[str] | None = None,
     source_classification: str | list[str] | None = None,
     consumer: str | None = None,
+    candidate_count: int | None = None,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -119,6 +121,8 @@ def emit_audit_record(
     }
     if consumer:
         event["consumer"] = consumer
+    if candidate_count is not None:
+        event["candidate_count"] = candidate_count
     if error_code:
         event["error_code"] = error_code
     audit_logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))

@@ -174,3 +174,15 @@ def test_discovery_detects_unregistered_shared_drives_and_root_folders():
     assert all(
         item.classification_suggestion.value == "management_only" for item in result
     )
+    drives.list.assert_called_once_with(pageSize=5, fields="drives(id,name)")
+    files.list.assert_called_once_with(
+        q=(
+            "'root' in parents and "
+            "mimeType='application/vnd.google-apps.folder' and "
+            "trashed=false"
+        ),
+        spaces="drive",
+        pageSize=4,
+        fields="files(id,name)",
+        orderBy="name",
+    )

@@ -12,6 +12,7 @@ from app.adapters.google_workspace.models import (
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.policies.source_access import SourceAccessPolicy
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
+from app.source_discovery.interface import DiscoveryResult, SourceDiscovery
 from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryMetadata
 
 
@@ -30,6 +31,17 @@ def list_registered_sources(registry: SourceRegistry) -> list[SourceRegistryMeta
     return [
         SourceRegistryMetadata.from_definition(source) for source in registry.sources
     ]
+
+
+def discover_candidate_sources(
+    *,
+    source_discovery: SourceDiscovery,
+    limit: int,
+) -> DiscoveryResult:
+    """Discover source roots only; never register or mutate a source."""
+
+    safe_limit = DriveReadPolicy.validate_list_limit(limit)
+    return source_discovery.discover(limit=safe_limit)
 
 
 def list_authorized_source_files(

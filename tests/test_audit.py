@@ -52,9 +52,9 @@ def test_source_discovery_route_has_audit_context():
     )
 
     assert request_audit_context(request) == (
-        "discover_sources",
+        "discover_source_candidates",
         None,
-        "google_drive",
+        "source_discovery",
     )
 
 
@@ -94,3 +94,29 @@ def test_audit_event_contains_metadata_but_no_content(monkeypatch):
     assert "text" not in event
     assert "values" not in event
     assert "owner" not in event
+
+
+def test_discovery_audit_contains_count_without_candidate_details(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            request_id="discovery-request-123",
+            candidate_count=3,
+        )
+    )
+
+    emit_audit_event(
+        request,
+        action="discover_source_candidates",
+        resource_id=None,
+        resource_type="source_discovery",
+        result="success",
+        http_status=200,
+    )
+
+    event = json.loads(log_info.call_args.args[0])
+    assert event["candidate_count"] == 3
+    assert "candidates" not in event
+    assert "location_id" not in event

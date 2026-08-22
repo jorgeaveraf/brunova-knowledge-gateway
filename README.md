@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.10:
+Arquitectura v0.10.1:
 
 Agents
 ↓
@@ -163,21 +163,39 @@ scopes.
 
 ## Source Discovery
 
+El modelo distingue tres conceptos:
+
+- **Source Registry:** fuentes aprobadas, clasificadas y versionadas en
+  `sources.yaml`.
+- **Source Discovery:** Shared Drives y carpetas principales que existen pero
+  todavía no están registradas.
+- **Documents:** artefactos contenidos dentro de una fuente aprobada; no son
+  candidatos a fuente por sí mismos.
+
 `SourceDiscovery` consulta de forma read-only Shared Drives visibles y carpetas
-raíz del usuario delegado. Genera `CandidateSource`, `SourceProposal` y una
-clasificación conservadora sugerida. La respuesta pública no contiene IDs de
-ubicación. Discovery nunca crea entradas, cambia clasificaciones ni modifica
-`sources.yaml`: discovery propone y el registry se aprueba por cambio versionado.
+raíz del usuario delegado. No hace crawling profundo, búsqueda por nombre de
+documentos ni lectura de contenido. Genera `CandidateSource` y
+`SourceProposal`: la propuesta incluye clasificación conservadora, confianza y
+razones para que un agente la compare contra conocimiento canónico antes de una
+decisión humana.
+
+Las respuestas públicas no contienen IDs de ubicación, IDs propuestos,
+permisos, configuración interna, documentos ni contenido. Discovery nunca crea
+entradas, cambia clasificaciones ni modifica `sources.yaml`: propone y el
+registry se aprueba únicamente mediante un cambio humano versionado.
 
 ## MCP
 
 El endpoint Streamable HTTP está montado en `/mcp` con MCP Python SDK 2.x,
 respuestas JSON, modo stateless para clientes legacy y protección contra DNS
-rebinding mediante `MCP_ALLOWED_HOSTS`. En Cloud Run permanece protegido por IAM.
+rebinding mediante `MCP_ALLOWED_HOSTS`. La autenticación de consumidores se
+aplica en el middleware del Gateway antes de llegar al transporte MCP.
 
 Tools disponibles:
 
 - `list_sources`: metadata no sensible del registry;
+- `discover_source_candidates`: propone Shared Drives y carpetas raíz no
+  registradas, sin ejecutar cambios;
 - `list_source_documents`: documentos autorizados de una fuente, con filtro
   opcional por nombre;
 - `retrieve_document`: lectura source-scoped de Google Docs;

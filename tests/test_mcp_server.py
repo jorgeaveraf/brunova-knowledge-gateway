@@ -15,6 +15,11 @@ from app.config.settings import Settings
 from app.policies.source_access import SourceAccessPolicy
 from app.runtime import KnowledgeRuntime
 from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
+from app.source_discovery.interface import (
+    CandidateSource,
+    DiscoveryResult,
+    SourceProposal,
+)
 
 mcp_module = importlib.import_module("app.mcp_server")
 
@@ -123,6 +128,37 @@ class FakeSheetsAdapter:
         )
 
 
+class FakeDiscovery:
+    def __init__(self, source_registry):
+        self.source_registry = source_registry
+
+    def discover(self, *, limit=25):
+        assert limit == 10
+        before = self.source_registry.sources
+        candidate = CandidateSource(
+            system="google_workspace",
+            location_type="shared_drive",
+            location_id="finance_drive_123",
+            name="Finance",
+            classification_suggestion="management_only",
+            reasons=("new shared drive detected",),
+        )
+        result = DiscoveryResult(
+            candidates=(candidate,),
+            proposals=(
+                SourceProposal(
+                    candidate=candidate,
+                    proposed_id="finance",
+                    suggested_classification="management_only",
+                    confidence="medium",
+                    reasons=candidate.reasons,
+                ),
+            ),
+        )
+        assert self.source_registry.sources == before
+        return result
+
+
 def runtime(*, in_source=True):
     source_registry = registry()
     runtime_settings = settings()
@@ -133,6 +169,7 @@ def runtime(*, in_source=True):
         workspace_adapter=FakeWorkspaceAdapter(in_source=in_source),
         docs_adapter=FakeDocsAdapter(),
         sheets_adapter=FakeSheetsAdapter(),
+        source_discovery=FakeDiscovery(source_registry),
     )
 
 
@@ -140,7 +177,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_four_governed_read_tools(monkeypatch):
+def test_mcp_exposes_only_the_five_governed_read_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -154,7 +191,37 @@ def test_mcp_exposes_only_the_four_governed_read_tools(monkeypatch):
         "list_source_documents",
         "retrieve_document",
         "retrieve_sheet_range",
+        "discover_source_candidates",
     }
+
+
+def test_mcp_discovers_safe_source_proposals_and_audits_count(monkeypatch):
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "discover_source_candidates",
+                {"limit": 10},
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is False
+    assert result.structured_content["candidates"][0] == {
+        "name": "Finance",
+        "location_type": "shared_drive",
+        "classification_suggestion": "management_only",
+        "reason": ["new shared drive detected"],
+        "exists": True,
+    }
+    assert result.structured_content["proposals"][0]["confidence"] == "medium"
+    assert "location_id" not in repr(result.structured_content)
+    assert "proposed_id" not in repr(result.structured_content)
+    assert audit.call_args.kwargs["action"] == "discover_source_candidates"
+    assert audit.call_args.kwargs["candidate_count"] == 1
 
 
 def test_mcp_lists_sources_and_filters_authorized_documents(monkeypatch):

@@ -21,6 +21,7 @@ from app.adapters.google_workspace.models import (
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.config.settings import Settings, get_settings
 from app.knowledge import (
+    discover_candidate_sources,
     list_authorized_source_files,
     list_registered_sources,
     registered_source,
@@ -33,7 +34,6 @@ from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.policies.source_access import SourceAccessPolicy
 from app.source_discovery.google_workspace import GoogleWorkspaceSourceDiscovery
 from app.source_discovery.interface import (
-    CandidateSourceMetadata,
     DiscoveryResponse,
     SourceDiscovery,
 )
@@ -48,7 +48,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.10.0",
+    version="0.10.1",
     lifespan=lifespan,
 )
 app.add_middleware(GatewayAuthenticationMiddleware)
@@ -277,17 +277,16 @@ def list_sources(registry: Registry) -> list[SourceRegistryMetadata]:
 
 @app.get("/sources/discover", response_model=DiscoveryResponse)
 def discover_sources(
+    request: Request,
     discovery: Discovery,
     limit: Annotated[int, Query(ge=1)] = 25,
 ) -> DiscoveryResponse:
-    safe_limit = DriveReadPolicy.validate_list_limit(limit)
-    result = discovery.discover(limit=safe_limit)
-    return DiscoveryResponse(
-        candidates=[
-            CandidateSourceMetadata.from_candidate(candidate)
-            for candidate in result.candidates
-        ]
+    result = discover_candidate_sources(
+        source_discovery=discovery,
+        limit=limit,
     )
+    request.state.candidate_count = len(result.candidates)
+    return DiscoveryResponse.from_result(result)
 
 
 @app.get("/sources/{source_id}", response_model=SourceRegistryMetadata)

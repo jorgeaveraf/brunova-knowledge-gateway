@@ -17,6 +17,7 @@ from app.adapters.google_workspace.models import (
 )
 from app.audit import correlation_id, emit_audit_record
 from app.knowledge import (
+    discover_candidate_sources,
     list_authorized_source_files,
     list_registered_sources,
     registered_source,
@@ -25,6 +26,7 @@ from app.knowledge import (
 )
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
 from app.source_registry import SourceRegistryMetadata
+from app.source_discovery.interface import DiscoveryResponse
 
 T = TypeVar("T")
 MCP_DOCUMENT_RESULT_LIMIT = 20
@@ -40,9 +42,13 @@ class DocumentListToolResult(BaseModel):
     request_id: str
 
 
+class SourceDiscoveryToolResult(DiscoveryResponse):
+    request_id: str
+
+
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.10.0",
+    version="0.10.1",
     instructions=(
         "Read authorized Brunova knowledge through semantic sources. "
         "All tools are read-only and policy governed."
@@ -62,6 +68,7 @@ def _execute_tool(
     source_id: str | None = None,
     resource_id: str | None = None,
     resource_type: str | None = None,
+    candidate_count: Callable[[T], int] | None = None,
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
@@ -80,6 +87,7 @@ def _execute_tool(
             http_status=200,
             source_id=source_id,
             source_classification=source_classification,
+            candidate_count=(candidate_count(result) if candidate_count else None),
         )
         return result
     except WorkspaceAdapterError as error:
@@ -122,6 +130,36 @@ def list_sources(ctx: Context) -> SourceListToolResult:
             request_id=request_id,
         ),
         resource_type="source_registry",
+    )
+
+
+@mcp_server.tool()
+def discover_source_candidates(
+    ctx: Context,
+    limit: int = 25,
+) -> SourceDiscoveryToolResult:
+    """Propose unregistered Shared Drives and root folders for human review."""
+
+    def operation(
+        runtime: KnowledgeRuntime,
+        request_id: str,
+    ) -> SourceDiscoveryToolResult:
+        result = discover_candidate_sources(
+            source_discovery=runtime.source_discovery,
+            limit=limit,
+        )
+        response = DiscoveryResponse.from_result(result)
+        return SourceDiscoveryToolResult(
+            **response.model_dump(),
+            request_id=request_id,
+        )
+
+    return _execute_tool(
+        ctx=ctx,
+        action="discover_source_candidates",
+        operation=operation,
+        resource_type="source_discovery",
+        candidate_count=lambda result: len(result.candidates),
     )
 
 

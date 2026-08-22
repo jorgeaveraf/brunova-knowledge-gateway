@@ -81,8 +81,9 @@ class FakeDiscovery:
                 SourceProposal(
                     candidate=candidate,
                     proposed_id="finance",
-                    proposed_classification=Classification.MANAGEMENT_ONLY,
-                    rationale="new shared drive detected",
+                    suggested_classification=Classification.MANAGEMENT_ONLY,
+                    confidence="medium",
+                    reasons=("new shared drive detected",),
                 ),
             ),
         )
@@ -330,10 +331,26 @@ def test_source_discovery_returns_safe_candidates_only():
                 "location_type": "shared_drive",
                 "classification_suggestion": "management_only",
                 "reason": ["new shared drive detected"],
+                "exists": True,
             }
-        ]
+        ],
+        "proposals": [
+            {
+                "type": "new_source_proposal",
+                "candidate": {
+                    "name": "Finance",
+                    "location_type": "shared_drive",
+                },
+                "suggested_classification": "management_only",
+                "confidence": "medium",
+                "reason": ["new shared drive detected"],
+            }
+        ],
     }
     assert "finance_drive_123" not in response.text
+    assert "proposed_id" not in response.text
+    assert "permissions" not in response.text
+    assert "content" not in response.text
 
 
 def test_source_files_resolves_authorizes_and_lists_one_source():

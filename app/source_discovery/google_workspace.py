@@ -37,8 +37,11 @@ class GoogleWorkspaceSourceDiscovery:
             SourceProposal(
                 candidate=candidate,
                 proposed_id=_proposed_id(candidate.name),
-                proposed_classification=candidate.classification_suggestion,
-                rationale="; ".join(candidate.reasons),
+                suggested_classification=candidate.classification_suggestion,
+                confidence=(
+                    "medium" if candidate.location_type == "shared_drive" else "low"
+                ),
+                reasons=candidate.reasons,
             )
             for candidate in candidates
         )

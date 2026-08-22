@@ -49,9 +49,11 @@ def test_discovery_proposes_candidates_without_mutating_registry():
 
     assert result.candidates == (candidate,)
     assert result.proposals[0].proposed_id == "finance"
-    assert result.proposals[0].proposed_classification == (
+    assert result.proposals[0].suggested_classification == (
         Classification.MANAGEMENT_ONLY
     )
+    assert result.proposals[0].confidence == "medium"
+    assert result.proposals[0].reasons == ("new shared drive detected",)
     assert source_registry.sources == before
     adapter.discover_source_candidates.assert_called_once_with(
         excluded_location_ids=frozenset(
@@ -59,3 +61,21 @@ def test_discovery_proposes_candidates_without_mutating_registry():
         ),
         limit=10,
     )
+
+
+def test_root_folder_proposal_uses_conservative_confidence():
+    candidate = CandidateSource(
+        system="google_workspace",
+        location_type="folder",
+        location_id="root_folder_12345",
+        name="00 Brunova HQ",
+        classification_suggestion=Classification.MANAGEMENT_ONLY,
+        reasons=("unregistered root folder detected",),
+    )
+    adapter = Mock()
+    adapter.discover_source_candidates.return_value = [candidate]
+
+    result = GoogleWorkspaceSourceDiscovery(adapter, registry()).discover(limit=5)
+
+    assert result.proposals[0].confidence == "low"
+    assert result.proposals[0].suggested_classification == "management_only"
