@@ -21,6 +21,7 @@ from app.source_discovery.interface import (
     SourceProposalSuggestion,
     candidate_identifier,
 )
+from app.source_proposal_store import ProposalObjectConflict, YamlSourceProposalStore
 
 mcp_module = importlib.import_module("app.mcp_server")
 
@@ -160,6 +161,21 @@ class FakeDiscovery:
         return result
 
 
+class MemoryObjectBackend:
+    def __init__(self):
+        self.content = None
+        self.generation = 0
+
+    def read(self):
+        return self.content, self.generation
+
+    def write(self, content, *, generation):
+        if generation != self.generation:
+            raise ProposalObjectConflict
+        self.content = content
+        self.generation += 1
+
+
 def runtime(*, in_source=True):
     source_registry = registry()
     runtime_settings = settings()
@@ -171,6 +187,7 @@ def runtime(*, in_source=True):
         docs_adapter=FakeDocsAdapter(),
         sheets_adapter=FakeSheetsAdapter(),
         source_discovery=FakeDiscovery(source_registry),
+        proposal_store=YamlSourceProposalStore(MemoryObjectBackend()),
     )
 
 
@@ -178,7 +195,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_seven_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_nine_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -195,6 +212,8 @@ def test_mcp_exposes_only_the_seven_governed_tools(monkeypatch):
         "discover_source_candidates",
         "get_source_candidate_details",
         "create_source_proposal",
+        "list_source_proposals",
+        "get_source_proposal",
     }
 
 
@@ -270,9 +289,14 @@ def test_mcp_candidate_details_and_proposal_creation_are_governed(monkeypatch):
                     "reason": "Reviewed; awaiting explicit human approval.",
                 },
             )
-            return details, proposal
+            proposals = await client.call_tool("list_source_proposals", {})
+            proposal_details = await client.call_tool(
+                "get_source_proposal",
+                {"proposal_id": proposal.structured_content["proposal_id"]},
+            )
+            return details, proposal, proposals, proposal_details
 
-    details, proposal = run(scenario())
+    details, proposal, proposals, proposal_details = run(scenario())
 
     assert details.is_error is False
     assert details.structured_content["candidate"]["candidate_id"] == candidate_id
@@ -281,9 +305,30 @@ def test_mcp_candidate_details_and_proposal_creation_are_governed(monkeypatch):
     assert proposal.is_error is False
     assert proposal.structured_content["status"] == "pending_review"
     assert proposal.structured_content["proposal_id"].startswith("proposal_")
+    assert proposals.is_error is False
+    assert proposals.structured_content["proposals"] == [
+        {
+            "proposal_id": proposal.structured_content["proposal_id"],
+            "name": "Finance",
+            "classification": "management_only",
+            "status": "pending_review",
+        }
+    ]
+    assert proposal_details.is_error is False
+    assert proposal_details.structured_content["proposal"]["candidate"]["name"] == (
+        "Finance"
+    )
+    assert proposal_details.structured_content["proposal"]["confidence"] == "medium"
+    assert "location_id" not in repr(proposal_details.structured_content)
+    assert "request_id" not in proposal_details.structured_content["proposal"]
     assert gateway_runtime.registry.sources == before
     actions = [call.kwargs["action"] for call in audit.call_args_list]
-    assert actions == ["get_source_candidate_details", "create_source_proposal"]
+    assert actions == [
+        "get_source_candidate_details",
+        "create_source_proposal",
+        "list_source_proposals",
+        "get_source_proposal",
+    ]
     assert audit.call_args.kwargs["proposal_id"] == (
         proposal.structured_content["proposal_id"]
     )

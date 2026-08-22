@@ -14,6 +14,8 @@ def test_settings_are_loaded_from_environment(monkeypatch):
     monkeypatch.setenv("WORKSPACE_BLOCKED_SOURCE_IDS", "blocked_123456")
     monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
     monkeypatch.setenv("WORKSPACE_SOURCE_REGISTRY_PATH", "custom/sources.yaml")
+    monkeypatch.setenv("SOURCE_PROPOSAL_BUCKET", "proposal-state-bucket")
+    monkeypatch.setenv("SOURCE_PROPOSAL_OBJECT", "governance/proposals.yaml")
 
     settings = Settings.from_environment()
 
@@ -27,6 +29,8 @@ def test_settings_are_loaded_from_environment(monkeypatch):
     assert settings.workspace_blocked_source_ids == ("blocked_123456",)
     assert settings.workspace_audit_enabled is True
     assert settings.workspace_source_registry_path == "custom/sources.yaml"
+    assert settings.source_proposal_bucket == "proposal-state-bucket"
+    assert settings.source_proposal_object == "governance/proposals.yaml"
 
 
 def test_missing_settings_are_rejected(monkeypatch):

@@ -18,10 +18,13 @@ from app.source_discovery.interface import (
     SourceDiscovery,
 )
 from app.source_governance import (
-    SourceProposal,
+    SourceProposalDetails,
+    SourceProposalRecord,
+    SourceProposalSummary,
     candidate_details,
     create_source_proposal as build_source_proposal,
 )
+from app.source_proposal_store import SourceProposalStore
 from app.source_registry import (
     Classification,
     SourceDefinition,
@@ -75,19 +78,20 @@ def get_candidate_details(
 def register_source_proposal(
     *,
     source_discovery: SourceDiscovery,
+    proposal_store: SourceProposalStore,
     candidate_id: str,
     name: str,
     classification: Classification,
     reason: str,
     request_id: str,
-) -> SourceProposal:
+) -> SourceProposalRecord:
     """Create an auditable pending intent without touching Source Registry."""
 
     result = discover_candidate_sources(
         source_discovery=source_discovery,
         limit=SOURCE_CANDIDATE_LOOKUP_LIMIT,
     )
-    return build_source_proposal(
+    proposal = build_source_proposal(
         result=result,
         candidate_id=candidate_id,
         name=name,
@@ -95,6 +99,23 @@ def register_source_proposal(
         reason=reason,
         request_id=request_id,
     )
+    return proposal_store.create(proposal)
+
+
+def list_registered_source_proposals(
+    proposal_store: SourceProposalStore,
+) -> list[SourceProposalSummary]:
+    return [
+        SourceProposalSummary.from_record(proposal)
+        for proposal in proposal_store.list()
+    ]
+
+
+def registered_source_proposal(
+    proposal_store: SourceProposalStore,
+    proposal_id: str,
+) -> SourceProposalDetails:
+    return SourceProposalDetails.from_record(proposal_store.get(proposal_id))
 
 
 def list_authorized_source_files(

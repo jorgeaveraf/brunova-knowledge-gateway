@@ -6,9 +6,10 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.source_discovery.interface import (
@@ -16,6 +17,7 @@ from app.source_discovery.interface import (
     CandidateDetailsResponse,
     CandidateSource,
     DiscoveryResult,
+    candidate_confidence,
     candidate_identifier,
 )
 from app.source_registry import Classification
@@ -48,6 +50,92 @@ class SourceProposalReceipt(BaseModel):
     @classmethod
     def from_proposal(cls, proposal: SourceProposal) -> "SourceProposalReceipt":
         return cls(proposal_id=proposal.proposal_id, status=proposal.status)
+
+
+class SourceProposalRecord(BaseModel):
+    """Safe durable representation; internal Workspace IDs are intentionally absent."""
+
+    model_config = ConfigDict(frozen=True)
+
+    proposal_id: str = Field(pattern=r"^proposal_[a-f0-9]{32}$")
+    candidate_id: str = Field(pattern=r"^candidate_[a-f0-9]{32}$")
+    candidate_name: str = Field(min_length=1, max_length=100)
+    location_type: Literal["shared_drive", "folder"]
+    suggested_classification: Classification
+    confidence: Literal["low", "medium", "high"]
+    reasons: tuple[str, ...] = Field(min_length=1)
+    created_at: datetime
+    request_id: str = Field(min_length=1, max_length=128)
+    status: Literal[SourceProposalStatus.PENDING_REVIEW]
+
+    @classmethod
+    def from_proposal(cls, proposal: SourceProposal) -> "SourceProposalRecord":
+        reasons = tuple(dict.fromkeys((*proposal.candidate.reasons, proposal.reason)))
+        return cls(
+            proposal_id=proposal.proposal_id,
+            candidate_id=candidate_identifier(proposal.candidate),
+            candidate_name=proposal.suggested_name,
+            location_type=proposal.candidate.location_type,
+            suggested_classification=proposal.classification,
+            confidence=candidate_confidence(proposal.candidate),
+            reasons=reasons,
+            created_at=proposal.timestamp,
+            request_id=proposal.request_id,
+            status=proposal.status,
+        )
+
+
+class SourceProposalDocument(BaseModel):
+    version: Literal[1] = 1
+    proposals: tuple[SourceProposalRecord, ...] = ()
+
+
+class SourceProposalSummary(BaseModel):
+    proposal_id: str
+    name: str
+    classification: Classification
+    status: SourceProposalStatus
+
+    @classmethod
+    def from_record(cls, proposal: SourceProposalRecord) -> "SourceProposalSummary":
+        return cls(
+            proposal_id=proposal.proposal_id,
+            name=proposal.candidate_name,
+            classification=proposal.suggested_classification,
+            status=proposal.status,
+        )
+
+
+class SourceProposalCandidateDetails(BaseModel):
+    candidate_id: str
+    name: str
+    location_type: Literal["shared_drive", "folder"]
+
+
+class SourceProposalDetails(BaseModel):
+    proposal_id: str
+    candidate: SourceProposalCandidateDetails
+    classification: Classification
+    confidence: Literal["low", "medium", "high"]
+    reasons: list[str]
+    created_at: datetime
+    status: SourceProposalStatus
+
+    @classmethod
+    def from_record(cls, proposal: SourceProposalRecord) -> "SourceProposalDetails":
+        return cls(
+            proposal_id=proposal.proposal_id,
+            candidate=SourceProposalCandidateDetails(
+                candidate_id=proposal.candidate_id,
+                name=proposal.candidate_name,
+                location_type=proposal.location_type,
+            ),
+            classification=proposal.suggested_classification,
+            confidence=proposal.confidence,
+            reasons=list(proposal.reasons),
+            created_at=proposal.created_at,
+            status=proposal.status,
+        )
 
 
 def candidate_details(

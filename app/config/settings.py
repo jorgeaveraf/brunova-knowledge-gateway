@@ -15,6 +15,8 @@ class Settings:
     workspace_source_max_depth: int
     workspace_audit_enabled: bool
     workspace_source_registry_path: str
+    source_proposal_bucket: str = ""
+    source_proposal_object: str = "source_proposals.yaml"
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -65,6 +67,9 @@ class Settings:
             _environment_bool("WORKSPACE_AUDIT_ENABLED", default=True),
             os.getenv("WORKSPACE_SOURCE_REGISTRY_PATH", "").strip()
             or "app/config/sources.yaml",
+            os.getenv("SOURCE_PROPOSAL_BUCKET", "").strip(),
+            os.getenv("SOURCE_PROPOSAL_OBJECT", "").strip()
+            or "source_proposals.yaml",
         )
 
 

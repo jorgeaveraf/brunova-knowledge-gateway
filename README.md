@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.11:
+Arquitectura v0.12:
 
 Agents
 ↓
@@ -27,6 +27,16 @@ Source Registry y Policies
 Adapters
 ↓
 External Systems
+
+Las propuestas pendientes siguen una rama separada y no autoritativa:
+
+```text
+Source Discovery → Source Proposal Store (YAML versionado en Cloud Storage)
+                                      ↓
+                              Management/Human review
+                                      ↓
+                         cambio versionado de sources.yaml
+```
 
 ## Google Workspace (v0.9)
 
@@ -46,6 +56,8 @@ Variables no secretas requeridas:
 - `WORKSPACE_BLOCKED_SOURCE_IDS` (recursos, carpetas o drives bloqueados)
 - `WORKSPACE_SOURCE_MAX_DEPTH` (profundidad máxima para resolver ancestros)
 - `WORKSPACE_AUDIT_ENABLED` (`true` o `false`)
+- `SOURCE_PROPOSAL_BUCKET` (bucket dedicado de Cloud Storage)
+- `SOURCE_PROPOSAL_OBJECT` (por defecto, `source_proposals.yaml`)
 - `MCP_ALLOWED_HOSTS` (hosts exactos permitidos para Streamable HTTP)
 - `MCP_ALLOWED_ORIGINS` (opcional; solo para clientes MCP en navegador)
 
@@ -194,11 +206,23 @@ consulta raíz acotada y devuelve nombre, tipo, clasificación sugerida, confian
 y razones; nunca devuelve usuarios, permisos, documentos o contenido.
 
 `create_source_proposal` genera una intención inmutable con `proposal_id`,
-candidato interno, nombre sugerido, clasificación, motivo, timestamp, request ID
-y el único estado permitido: `pending_review`. La respuesta pública es un recibo
-con `proposal_id`, estado y request ID. La auditoría estructurada funciona como
-journal durable del recibo; v0.11 no incorpora un proposal store consultable ni
-pretende que el Gateway sea autoridad canónica.
+identificador opaco del candidato, nombre sugerido, tipo de ubicación,
+clasificación, confianza, razones, timestamp, request ID y el único estado
+permitido: `pending_review`. La intención se persiste en un documento YAML de
+Cloud Storage y la respuesta pública conserva el recibo mínimo con
+`proposal_id`, estado y request ID.
+
+El archivo `app/config/source_proposals.yaml` documenta y valida el esquema
+vacío. En producción no se escribe el filesystem efímero de Cloud Run: el store
+usa ADC con la misma Service Account del runtime para leer y actualizar el
+objeto configurado. Cada escritura lleva una precondición de generación para no
+sobrescribir cambios concurrentes y el bucket mantiene Object Versioning. La
+Service Account solo necesita `roles/storage.objectUser` en ese bucket.
+
+`list_source_proposals` devuelve únicamente resúmenes pendientes y
+`get_source_proposal` expone el detalle seguro necesario para revisión. Ninguna
+respuesta contiene IDs internos de Drive, permisos, usuarios, documentos,
+contenido o el request ID persistido.
 
 Crear una propuesta no aprueba, aplica ni agrega una fuente. No existe estado
 `approved` o `applied`, ni operación que modifique `sources.yaml`. El flujo es:
@@ -209,6 +233,24 @@ Discovery → Candidate → Pending proposal → Human approval → Versioned re
 
 La interpretación, comparación contra conocimiento canónico y aprobación
 pertenecen al Management Agent y a la persona responsable, no al Gateway.
+
+Configuración inicial recomendada del store:
+
+```bash
+gcloud storage buckets create gs://<bucket-dedicado> \
+  --project=brunova-ai-platform \
+  --location=us-central1 \
+  --uniform-bucket-level-access
+
+gcloud storage buckets update gs://<bucket-dedicado> --versioning
+
+gcloud storage buckets add-iam-policy-binding gs://<bucket-dedicado> \
+  --member=serviceAccount:brunova-knowledge-agent@brunova-ai-platform.iam.gserviceaccount.com \
+  --role=roles/storage.objectUser
+```
+
+El objeto puede iniciar con `version: 1` y `proposals: []`. No contiene secretos
+ni modifica el Source Registry.
 
 ## MCP
 
@@ -224,8 +266,10 @@ Tools disponibles:
   registradas, sin ejecutar cambios;
 - `get_source_candidate_details`: devuelve detalle seguro de un candidato por
   su identificador opaco;
-- `create_source_proposal`: registra un recibo `pending_review` auditable, sin
-  aprobar ni aplicar cambios;
+- `create_source_proposal`: persiste una intención `pending_review` auditable,
+  sin aprobar ni aplicar cambios;
+- `list_source_proposals`: lista resúmenes seguros del registro durable;
+- `get_source_proposal`: devuelve el detalle seguro de una propuesta pendiente;
 - `list_source_documents`: documentos autorizados de una fuente, con filtro
   opcional por nombre;
 - `retrieve_document`: lectura source-scoped de Google Docs;
@@ -235,8 +279,8 @@ Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
 propagan como tool errors legibles. Ningún tool escribe en Google Workspace ni
-modifica el Source Registry; `create_source_proposal` solo genera y audita una
-intención pendiente.
+modifica el Source Registry; las tres herramientas de proposals solo persisten
+o consultan intenciones pendientes.
 
 ## Autenticación del Gateway
 

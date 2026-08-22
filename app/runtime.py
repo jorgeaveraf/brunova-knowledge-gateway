@@ -11,6 +11,11 @@ from app.config.settings import Settings, get_settings
 from app.policies.source_access import SourceAccessPolicy
 from app.source_discovery.google_workspace import GoogleWorkspaceSourceDiscovery
 from app.source_discovery.interface import SourceDiscovery
+from app.source_proposal_store import (
+    CloudStorageProposalObjectBackend,
+    SourceProposalStore,
+    YamlSourceProposalStore,
+)
 from app.source_registry import SourceRegistry
 
 
@@ -23,6 +28,7 @@ class KnowledgeRuntime:
     docs_adapter: GoogleDocsAdapter
     sheets_adapter: GoogleSheetsAdapter
     source_discovery: SourceDiscovery
+    proposal_store: SourceProposalStore
 
 
 @lru_cache
@@ -42,6 +48,12 @@ def get_runtime_gateway() -> KnowledgeRuntime:
                 workspace_adapter,
                 registry,
                 blocked_location_ids=settings.workspace_blocked_source_ids,
+            ),
+            proposal_store=YamlSourceProposalStore(
+                CloudStorageProposalObjectBackend(
+                    bucket_name=settings.source_proposal_bucket,
+                    object_name=settings.source_proposal_object,
+                )
             ),
         )
     except ValueError as error:

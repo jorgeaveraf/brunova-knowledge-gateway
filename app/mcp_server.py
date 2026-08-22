@@ -21,14 +21,20 @@ from app.knowledge import (
     get_candidate_details,
     list_authorized_source_files,
     list_registered_sources,
+    list_registered_source_proposals,
     registered_source,
+    registered_source_proposal,
     register_source_proposal,
     retrieve_authorized_document,
     retrieve_authorized_sheet_range,
 )
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
 from app.source_discovery.interface import CandidateDetailsResponse, DiscoveryResponse
-from app.source_governance import SourceProposalReceipt
+from app.source_governance import (
+    SourceProposalDetails,
+    SourceProposalReceipt,
+    SourceProposalSummary,
+)
 from app.source_registry import Classification, SourceRegistryMetadata
 
 T = TypeVar("T")
@@ -57,9 +63,19 @@ class SourceProposalToolResult(SourceProposalReceipt):
     request_id: str
 
 
+class SourceProposalListToolResult(BaseModel):
+    proposals: list[SourceProposalSummary]
+    request_id: str
+
+
+class SourceProposalDetailsToolResult(BaseModel):
+    proposal: SourceProposalDetails
+    request_id: str
+
+
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.11.0",
+    version="0.12.0",
     instructions=(
         "Read authorized Brunova knowledge and create pending source governance "
         "intents. No tool approves sources, mutates Source Registry, or writes to "
@@ -222,13 +238,17 @@ def create_source_proposal(
     ) -> SourceProposalToolResult:
         proposal = register_source_proposal(
             source_discovery=runtime.source_discovery,
+            proposal_store=runtime.proposal_store,
             candidate_id=candidate_id,
             name=name,
             classification=classification,
             reason=reason,
             request_id=request_id,
         )
-        receipt = SourceProposalReceipt.from_proposal(proposal)
+        receipt = SourceProposalReceipt(
+            proposal_id=proposal.proposal_id,
+            status=proposal.status,
+        )
         return SourceProposalToolResult(
             **receipt.model_dump(),
             request_id=request_id,
@@ -241,6 +261,44 @@ def create_source_proposal(
         resource_id=candidate_id,
         resource_type="source_proposal",
         proposal_id=lambda result: result.proposal_id,
+    )
+
+
+@mcp_server.tool()
+def list_source_proposals(ctx: Context) -> SourceProposalListToolResult:
+    """List safe pending proposal summaries from the durable registry."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="list_source_proposals",
+        operation=lambda runtime, request_id: SourceProposalListToolResult(
+            proposals=list_registered_source_proposals(runtime.proposal_store),
+            request_id=request_id,
+        ),
+        resource_type="source_proposal_registry",
+    )
+
+
+@mcp_server.tool()
+def get_source_proposal(
+    proposal_id: str,
+    ctx: Context,
+) -> SourceProposalDetailsToolResult:
+    """Get safe review details for one durable pending source proposal."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="get_source_proposal",
+        operation=lambda runtime, request_id: SourceProposalDetailsToolResult(
+            proposal=registered_source_proposal(
+                runtime.proposal_store,
+                proposal_id,
+            ),
+            request_id=request_id,
+        ),
+        resource_id=proposal_id,
+        resource_type="source_proposal",
+        proposal_id=lambda result: result.proposal.proposal_id,
     )
 
 
