@@ -38,6 +38,26 @@ class SourceRegistryDocument(BaseModel):
     sources: tuple[SourceDefinition, ...]
 
 
+class SourceRegistryMetadata(BaseModel):
+    """Non-sensitive registry metadata safe for public gateway responses."""
+
+    id: str
+    name: str
+    system: Literal["google_workspace"]
+    classification: Classification
+    status: SourceStatus
+
+    @classmethod
+    def from_definition(cls, source: SourceDefinition) -> "SourceRegistryMetadata":
+        return cls(
+            id=source.id,
+            name=source.name,
+            system=source.system,
+            classification=source.classification,
+            status=source.status,
+        )
+
+
 class SourceRegistry:
     def __init__(self, document: SourceRegistryDocument) -> None:
         self.version = document.version

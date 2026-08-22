@@ -2,12 +2,25 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from app.audit import correlation_id, emit_audit_event
+from app.audit import correlation_id, emit_audit_event, request_audit_context
 
 
 def test_valid_correlation_id_is_preserved_and_invalid_one_is_replaced():
     assert correlation_id("client-request-123") == "client-request-123"
     assert correlation_id("invalid request id") != "invalid request id"
+
+
+def test_source_files_route_has_audit_context():
+    request = SimpleNamespace(
+        url=SimpleNamespace(path="/sources/career_ops/files"),
+        path_params={"source_id": "career_ops"},
+    )
+
+    assert request_audit_context(request) == (
+        "list_files",
+        None,
+        "google_drive",
+    )
 
 
 def test_audit_event_contains_metadata_but_no_content(monkeypatch):
@@ -42,6 +55,7 @@ def test_audit_event_contains_metadata_but_no_content(monkeypatch):
     assert event["action"] == "read_document"
     assert event["source_id"] == "career_ops"
     assert event["classification"] == "management_only"
+    assert event["source_classification"] == "management_only"
     assert "text" not in event
     assert "values" not in event
     assert "owner" not in event

@@ -35,6 +35,8 @@ def request_audit_context(request: Request) -> tuple[str | None, str | None, str
     path = request.url.path
     if path == "/workspace/drive/list":
         return "list_files", None, "google_drive"
+    if path.startswith("/sources/") and path.endswith("/files"):
+        return "list_files", None, "google_drive"
     if path.startswith("/workspace/docs/"):
         return "read_document", request.path_params.get("document_id"), "google_doc"
     if path.startswith("/workspace/sheets/"):
@@ -77,6 +79,7 @@ def emit_audit_event(
         "request_id": request.state.request_id,
         "source_id": getattr(request.state, "source_id", None),
         "classification": getattr(request.state, "classification", None),
+        "source_classification": getattr(request.state, "classification", None),
     }
     if error_code:
         event["error_code"] = error_code

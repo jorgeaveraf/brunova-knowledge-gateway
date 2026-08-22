@@ -1,6 +1,6 @@
 import pytest
 
-from app.source_registry import Classification, SourceRegistry
+from app.source_registry import Classification, SourceRegistry, SourceRegistryMetadata
 
 
 def write_registry(tmp_path, *, classification="management_only", status="active"):
@@ -28,6 +28,20 @@ def test_existing_source_is_loaded_and_missing_source_raises(tmp_path):
     assert registry.get("career_ops").name == "Career Ops"
     with pytest.raises(KeyError):
         registry.get("missing_source")
+
+
+def test_source_metadata_excludes_internal_registry_fields(tmp_path):
+    registry = SourceRegistry.load(str(write_registry(tmp_path)))
+
+    metadata = SourceRegistryMetadata.from_definition(registry.get("career_ops"))
+
+    assert metadata.model_dump(mode="json") == {
+        "id": "career_ops",
+        "name": "Career Ops",
+        "system": "google_workspace",
+        "classification": "management_only",
+        "status": "active",
+    }
 
 
 @pytest.mark.parametrize(

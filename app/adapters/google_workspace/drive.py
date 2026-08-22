@@ -16,7 +16,7 @@ from app.adapters.google_workspace.models import (
 )
 from app.config.settings import Settings
 from app.policies.classification import SourceContext
-from app.policies.source_access import SourceAccessPolicy
+from app.policies.source_access import AllowedSource, SourceAccessPolicy
 
 ServiceBuilder = Callable[..., Any]
 
@@ -68,6 +68,34 @@ class GoogleWorkspaceAdapter:
         self, *, limit: int, source_policy: SourceAccessPolicy
     ) -> list[DriveFile]:
         sources = source_policy.allowed_sources()
+        return self._list_allowed_sources(
+            sources=(*sources.shared_drives, *sources.folders),
+            limit=limit,
+            source_policy=source_policy,
+        )
+
+    def list_source_files(
+        self,
+        *,
+        source: AllowedSource,
+        limit: int,
+        source_policy: SourceAccessPolicy,
+    ) -> list[DriveFile]:
+        """List files for one source already resolved and authorized by policy."""
+
+        return self._list_allowed_sources(
+            sources=(source,),
+            limit=limit,
+            source_policy=source_policy,
+        )
+
+    def _list_allowed_sources(
+        self,
+        *,
+        sources: tuple[AllowedSource, ...],
+        limit: int,
+        source_policy: SourceAccessPolicy,
+    ) -> list[DriveFile]:
         files: list[DriveFile] = []
         seen_ids: set[str] = set()
 
@@ -76,49 +104,13 @@ class GoogleWorkspaceAdapter:
             drive = self._service_builder(
                 "drive", "v3", credentials=credentials, cache_discovery=False
             )
-            for allowed_source in sources.shared_drives:
-                drive_id = allowed_source.definition.location_id
-                response = (
-                    drive.files()
-                    .list(
-                        corpora="drive",
-                        driveId=drive_id,
-                        includeItemsFromAllDrives=True,
-                        supportsAllDrives=True,
-                        q="trashed=false",
-                        pageSize=limit - len(files),
-                        fields="files(id,name,mimeType)",
-                        orderBy="modifiedTime desc",
-                    )
-                    .execute()
-                )
-                self._append_allowed_files(
-                    response,
-                    files,
-                    seen_ids,
-                    source_policy,
-                    allowed_source.context,
-                    limit,
-                )
+            for allowed_source in sources:
                 if len(files) >= limit:
                     break
-
-            for allowed_source in sources.folders:
-                folder_id = allowed_source.definition.location_id
-                if len(files) >= limit:
-                    break
-                response = (
-                    drive.files()
-                    .list(
-                        q=f"'{folder_id}' in parents and trashed=false",
-                        spaces="drive",
-                        includeItemsFromAllDrives=True,
-                        supportsAllDrives=True,
-                        pageSize=limit - len(files),
-                        fields="files(id,name,mimeType)",
-                        orderBy="modifiedTime desc",
-                    )
-                    .execute()
+                response = self._list_source_location(
+                    drive,
+                    allowed_source,
+                    page_size=limit - len(files),
                 )
                 self._append_allowed_files(
                     response,
@@ -131,6 +123,39 @@ class GoogleWorkspaceAdapter:
             return files
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
+
+    @staticmethod
+    def _list_source_location(
+        drive: Any, source: AllowedSource, *, page_size: int
+    ) -> dict[str, Any]:
+        definition = source.definition
+        common = {
+            "includeItemsFromAllDrives": True,
+            "supportsAllDrives": True,
+            "pageSize": page_size,
+            "fields": "files(id,name,mimeType)",
+            "orderBy": "modifiedTime desc",
+        }
+        if definition.location_type == "shared_drive":
+            return (
+                drive.files()
+                .list(
+                    corpora="drive",
+                    driveId=definition.location_id,
+                    q="trashed=false",
+                    **common,
+                )
+                .execute()
+            )
+        return (
+            drive.files()
+            .list(
+                q=f"'{definition.location_id}' in parents and trashed=false",
+                spaces="drive",
+                **common,
+            )
+            .execute()
+        )
 
     def get_resource(self, resource_id: str) -> WorkspaceResource:
         try:

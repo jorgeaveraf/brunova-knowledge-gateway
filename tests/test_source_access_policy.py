@@ -60,6 +60,16 @@ def test_resource_in_registered_folder_is_authorized_and_classified():
     assert context.classification.value == "management_only"
 
 
+def test_registered_source_is_explicitly_authorized():
+    source_registry = registry()
+    policy = SourceAccessPolicy(settings(), source_registry)
+
+    allowed = policy.authorize_source(source_registry.get("career_ops"))
+
+    assert allowed.definition.id == "career_ops"
+    assert allowed.context.classification.value == "management_only"
+
+
 def test_resource_in_registered_shared_drive_is_authorized():
     policy = SourceAccessPolicy(settings(), registry(location_type="shared_drive"))
 
@@ -96,6 +106,18 @@ def test_disabled_source_is_rejected():
         policy.authorize(resource())
 
     assert error.value.code == "source_disabled"
+
+
+def test_explicitly_selected_blocked_source_is_rejected():
+    source_registry = registry()
+    policy = SourceAccessPolicy(
+        settings(blocked=("folder_123456789",)), source_registry
+    )
+
+    with pytest.raises(WorkspaceAdapterError) as error:
+        policy.authorize_source(source_registry.get("career_ops"))
+
+    assert error.value.code == "source_not_allowed"
 
 
 def test_resource_outside_registry_is_rejected():

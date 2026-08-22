@@ -21,11 +21,15 @@ from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.config.settings import Settings, get_settings
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.policies.source_access import SourceAccessPolicy
-from app.source_registry import SourceRegistry
+from app.source_registry import (
+    SourceDefinition,
+    SourceRegistry,
+    SourceRegistryMetadata,
+)
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.5.0",
+    version="0.6.0",
 )
 
 
@@ -80,6 +84,18 @@ WorkspaceAdapter = Annotated[GoogleWorkspaceAdapter, Depends(get_workspace_adapt
 DocsAdapter = Annotated[GoogleDocsAdapter, Depends(get_docs_adapter)]
 SheetsAdapter = Annotated[GoogleSheetsAdapter, Depends(get_sheets_adapter)]
 SourcePolicy = Annotated[SourceAccessPolicy, Depends(get_source_policy)]
+Registry = Annotated[SourceRegistry, Depends(get_source_registry)]
+
+
+def _registered_source(registry: SourceRegistry, source_id: str) -> SourceDefinition:
+    try:
+        return registry.get(source_id)
+    except KeyError as error:
+        raise WorkspaceAdapterError(
+            "source_not_found",
+            "The requested knowledge source is not registered.",
+            404,
+        ) from error
 
 
 @app.middleware("http")
@@ -195,7 +211,11 @@ def workspace_status(request: Request, adapter: WorkspaceAdapter) -> WorkspaceSt
     )
 
 
-@app.get("/workspace/drive/list", response_model=DriveListResponse)
+@app.get(
+    "/workspace/drive/list",
+    response_model=DriveListResponse,
+    deprecated=True,
+)
 def workspace_drive_list(
     request: Request,
     adapter: WorkspaceAdapter,
@@ -217,6 +237,44 @@ def workspace_drive_list(
         )
     return DriveListResponse(
         files=files,
+        request_id=request.state.request_id,
+    )
+
+
+@app.get("/sources", response_model=list[SourceRegistryMetadata])
+def list_sources(registry: Registry) -> list[SourceRegistryMetadata]:
+    return [
+        SourceRegistryMetadata.from_definition(source) for source in registry.sources
+    ]
+
+
+@app.get("/sources/{source_id}", response_model=SourceRegistryMetadata)
+def get_source(source_id: str, registry: Registry) -> SourceRegistryMetadata:
+    return SourceRegistryMetadata.from_definition(
+        _registered_source(registry, source_id)
+    )
+
+
+@app.get("/sources/{source_id}/files", response_model=DriveListResponse)
+def source_files(
+    request: Request,
+    source_id: str,
+    registry: Registry,
+    adapter: WorkspaceAdapter,
+    source_policy: SourcePolicy,
+    limit: Annotated[int, Query(ge=1)] = 10,
+) -> DriveListResponse:
+    request.state.source_id = source_id
+    source = _registered_source(registry, source_id)
+    request.state.classification = source.classification.value
+    allowed_source = source_policy.authorize_source(source)
+    safe_limit = DriveReadPolicy.validate_list_limit(limit)
+    return DriveListResponse(
+        files=adapter.list_source_files(
+            source=allowed_source,
+            limit=safe_limit,
+            source_policy=source_policy,
+        ),
         request_id=request.state.request_id,
     )
 

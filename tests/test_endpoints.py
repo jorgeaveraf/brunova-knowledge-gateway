@@ -9,14 +9,42 @@ from app.adapters.google_workspace.models import (
 )
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.policies.classification import SourceContext
-from app.source_registry import Classification
+from app.policies.source_access import AllowedSource
+from app.source_registry import (
+    Classification,
+    SourceDefinition,
+    SourceRegistry,
+    SourceRegistryDocument,
+)
 from app.main import (
     app,
     get_docs_adapter,
     get_sheets_adapter,
     get_source_policy,
+    get_source_registry,
     get_workspace_adapter,
 )
+
+
+TEST_SOURCE = SourceDefinition.model_validate(
+    {
+        "id": "career_ops",
+        "name": "Career Ops",
+        "system": "google_workspace",
+        "location_type": "folder",
+        "location_id": "allowed_folder_123",
+        "classification": "management_only",
+        "owner": ["Jorge", "Nat"],
+        "status": "active",
+    }
+)
+TEST_REGISTRY = SourceRegistry(
+    SourceRegistryDocument(version=1, sources=(TEST_SOURCE,))
+)
+
+
+def fake_source_registry():
+    return TEST_REGISTRY
 
 
 class FakeWorkspaceAdapter:
@@ -27,6 +55,15 @@ class FakeWorkspaceAdapter:
 
     def list_files(self, *, limit, source_policy):
         assert limit == 2
+        return self._files()
+
+    def list_source_files(self, *, source, limit, source_policy):
+        assert source.definition.id == "career_ops"
+        assert limit == 2
+        return self._files()
+
+    @staticmethod
+    def _files():
         return [
             DriveFile(
                 id="document_12345",
@@ -65,9 +102,28 @@ class FakeSourcePolicy:
             classification=Classification.MANAGEMENT_ONLY,
         )
 
+    def authorize_source(self, source):
+        assert source == TEST_SOURCE
+        return AllowedSource(definition=source, context=self.authorize_context())
+
+    @staticmethod
+    def authorize_context():
+        return SourceContext(
+            source_id="career_ops",
+            source_name="Career Ops",
+            classification=Classification.MANAGEMENT_ONLY,
+        )
+
 
 class RejectSourcePolicy:
     def authorize(self, _resource):
+        raise WorkspaceAdapterError(
+            "source_not_allowed",
+            "Resource is outside approved knowledge sources.",
+            403,
+        )
+
+    def authorize_source(self, _source):
         raise WorkspaceAdapterError(
             "source_not_allowed",
             "Resource is outside approved knowledge sources.",
@@ -160,6 +216,81 @@ def test_drive_list_rejects_unbounded_request():
     assert response.status_code == 422
     assert response.json()["detail"] == "limit must be at most 100"
     assert response.json()["request_id"] == response.headers["X-Correlation-ID"]
+
+
+def test_sources_list_returns_only_safe_registry_metadata():
+    app.dependency_overrides[get_source_registry] = fake_source_registry
+    try:
+        response = TestClient(app).get("/sources")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "career_ops",
+            "name": "Career Ops",
+            "system": "google_workspace",
+            "classification": "management_only",
+            "status": "active",
+        }
+    ]
+    assert "owner" not in response.text
+    assert "location_id" not in response.text
+
+
+def test_source_detail_returns_safe_metadata_and_missing_source_is_404():
+    app.dependency_overrides[get_source_registry] = fake_source_registry
+    try:
+        client = TestClient(app)
+        response = client.get("/sources/career_ops")
+        missing = client.get("/sources/missing_source")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "career_ops"
+    assert response.json()["classification"] == "management_only"
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "source_not_found"
+
+
+def test_source_files_resolves_authorizes_and_lists_one_source():
+    app.dependency_overrides[get_source_registry] = fake_source_registry
+    app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
+    app.dependency_overrides[get_source_policy] = FakeSourcePolicy
+    try:
+        response = TestClient(app).get(
+            "/sources/career_ops/files?limit=2",
+            headers={"X-Correlation-ID": "source-files-request"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["request_id"] == "source-files-request"
+    assert response.json()["files"][0]["source"] == {
+        "id": "career_ops",
+        "name": "Career Ops",
+        "classification": "management_only",
+    }
+
+
+def test_source_files_rejects_missing_and_blocked_sources():
+    app.dependency_overrides[get_source_registry] = fake_source_registry
+    app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
+    app.dependency_overrides[get_source_policy] = RejectSourcePolicy
+    try:
+        client = TestClient(app)
+        missing = client.get("/sources/missing_source/files?limit=2")
+        blocked = client.get("/sources/career_ops/files?limit=2")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "source_not_found"
+    assert blocked.status_code == 403
+    assert blocked.json()["error"]["code"] == "source_not_allowed"
 
 
 def test_document_content_response():

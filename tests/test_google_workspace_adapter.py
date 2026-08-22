@@ -101,3 +101,37 @@ def test_list_files_returns_only_normalized_basic_metadata():
         fields="files(id,name,mimeType)",
         orderBy="modifiedTime desc",
     )
+
+
+def test_list_source_files_queries_only_the_selected_authorized_source():
+    request = Mock()
+    request.execute.return_value = {"files": []}
+    files = Mock()
+    files.list.return_value = request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    registry = source_registry()
+    policy = SourceAccessPolicy(settings(), registry)
+    source = policy.authorize_source(registry.get("career_ops"))
+
+    result = adapter.list_source_files(
+        source=source,
+        limit=3,
+        source_policy=policy,
+    )
+
+    assert result == []
+    files.list.assert_called_once_with(
+        q="'allowed_folder_123' in parents and trashed=false",
+        spaces="drive",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
+        pageSize=3,
+        fields="files(id,name,mimeType)",
+        orderBy="modifiedTime desc",
+    )

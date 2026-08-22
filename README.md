@@ -20,7 +20,7 @@ Knowledge Gateway
 ↓
 External Systems
 
-## Google Workspace (v0.5)
+## Google Workspace (v0.6)
 
 El adapter usa Application Default Credentials de Cloud Run y firma remota con
 IAM Credentials para crear credenciales delegadas, sin archivos de claves ni
@@ -49,12 +49,17 @@ Workspace Domain Wide Delegation, su Client ID debe tener autorizados:
 
 Endpoints:
 
+- `GET /sources`: lista metadata no sensible de todas las fuentes registradas.
+- `GET /sources/{source_id}`: devuelve metadata no sensible de una fuente.
+- `GET /sources/{source_id}/files?limit=10`: resuelve una fuente explícita,
+  aplica `SourceAccessPolicy` y devuelve exclusivamente archivos de esa fuente.
 - `GET /workspace/status`: valida autenticación y acceso mediante una consulta
   mínima a Drive.
 - `GET /workspace/drive/list?limit=10`: devuelve hasta 100 archivos con `id`,
   `name`, `type` y metadata semántica de la fuente; no descarga contenido. El
   `id` permite solicitar el contenido autorizado en los endpoints de Docs y
-  Sheets.
+  Sheets. Se conserva temporalmente por compatibilidad y está marcado como
+  deprecado en OpenAPI; las integraciones nuevas deben seleccionar `source_id`.
 - `GET /workspace/docs/{document_id}`: devuelve metadata y texto con truncamiento
   controlado por `WORKSPACE_DOC_MAX_CHARS`, además de la fuente y su
   clasificación.
@@ -87,6 +92,24 @@ un `location_id` únicos, se elige una de las cuatro clasificaciones y se valida
 la suite de tests antes de desplegar. El registro no contiene secretos. Los
 owners permanecen en configuración y no se exponen en endpoints ni auditoría.
 
+El consumo explícito sigue este flujo:
+
+```text
+source_id
+    ↓
+SourceRegistry
+    ↓
+SourceDefinition
+    ↓
+SourceAccessPolicy
+    ↓
+GoogleWorkspaceAdapter
+```
+
+El adapter recibe una fuente ya resuelta y autorizada. No consulta el YAML ni
+descubre ubicaciones por su cuenta. El registry sigue siendo administrado de
+forma humana y versionada; Google Workspace nunca modifica `sources.yaml`.
+
 `ClassificationPolicy` convierte una fuente activa en contexto semántico.
 `SourceAccessPolicy` usa el registro para autorizar la ubicación antes de que el
 adapter lea contenido. Una fuente `disabled` se rechaza. La clasificación aporta
@@ -107,8 +130,17 @@ un UUID. El ID se devuelve en el mismo header y en respuestas Workspace. Los
 eventos de auditoría se emiten como JSON de una sola línea con timestamp,
 servicio, actor, usuario delegado, acción, tipo e ID de recurso, resultado,
 status HTTP, request ID, `source_id`, clasificación y código de error cuando
-aplica. Nunca incluyen owners, texto de Docs, valores de Sheets, tokens,
-credenciales ni scopes.
+aplica. `source_classification` es el campo explícito de v0.6 y
+`classification` se conserva por compatibilidad con consumidores v0.5. Nunca
+incluyen owners, texto de Docs, valores de Sheets, tokens, credenciales ni
+scopes.
+
+## Preparación para discovery
+
+`app/source_discovery/interface.py` define únicamente contratos internos para
+`CandidateSource`, `SourceProposal`, `DiscoveryResult` y `SourceDiscovery`. No
+hay implementación conectada a Google Workspace, sincronización automática ni
+mutación del registry en v0.6.
 
 Las APIs de Drive, Docs, Sheets e IAM Service Account Credentials deben estar
 habilitadas en el proyecto de GCP.

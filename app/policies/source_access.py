@@ -62,6 +62,20 @@ class SourceAccessPolicy:
             ),
         )
 
+    def authorize_source(self, source: SourceDefinition) -> AllowedSource:
+        """Authorize registry metadata before it is passed to an adapter."""
+
+        try:
+            registered_source = self._registry.get(source.id)
+        except KeyError as error:
+            raise self._not_allowed() from error
+        if registered_source != source or source.location_id in self._blocked:
+            raise self._not_allowed()
+        return AllowedSource(
+            definition=source,
+            context=ClassificationPolicy.apply(source),
+        )
+
     def authorize(self, resource: WorkspaceResource) -> SourceContext:
         resource_locations = {
             resource.id,
