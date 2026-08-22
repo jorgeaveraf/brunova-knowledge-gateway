@@ -11,11 +11,10 @@ def test_sheets_adapter_reads_only_the_requested_range():
         workspace_service_account_email="gateway@project.iam.gserviceaccount.com",
         workspace_doc_max_chars=1000,
         workspace_sheet_max_cells=100,
-        workspace_allowed_shared_drive_ids=(),
-        workspace_allowed_folder_ids=("allowed_folder_123",),
         workspace_blocked_source_ids=(),
         workspace_source_max_depth=20,
         workspace_audit_enabled=True,
+        workspace_source_registry_path="app/config/sources.yaml",
     )
     get_request = Mock()
     get_request.execute.return_value = {"range": "Sheet1!A1:B2", "values": [[1, 2]]}
@@ -46,6 +45,7 @@ def test_sheets_adapter_reads_only_the_requested_range():
         "range": "A1:B2",
         "values": [[1, 2]],
         "request_id": None,
+        "source": None,
     }
     values.get.assert_called_once_with(
         spreadsheetId="spreadsheet_12345", range="A1:B2"

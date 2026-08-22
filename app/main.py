@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -13,16 +14,18 @@ from app.adapters.google_workspace.models import (
     DriveListResponse,
     GoogleDocContent,
     SheetRangeContent,
+    SourceMetadata,
     WorkspaceStatusResponse,
 )
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.config.settings import Settings, get_settings
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.policies.source_access import SourceAccessPolicy
+from app.source_registry import SourceRegistry
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.4.0"
+    version="0.5.0",
 )
 
 
@@ -49,9 +52,26 @@ def get_sheets_adapter() -> GoogleSheetsAdapter:
     return GoogleSheetsAdapter(_get_valid_settings())
 
 
+def get_source_registry() -> SourceRegistry:
+    settings = _get_valid_settings()
+    try:
+        return _load_source_registry(settings.workspace_source_registry_path)
+    except ValueError as error:
+        raise WorkspaceAdapterError(
+            "source_registry_invalid",
+            "Source registry configuration is invalid.",
+            503,
+        ) from error
+
+
+@lru_cache
+def _load_source_registry(path: str) -> SourceRegistry:
+    return SourceRegistry.load(path)
+
+
 def get_source_policy() -> SourceAccessPolicy:
     try:
-        return SourceAccessPolicy(_get_valid_settings())
+        return SourceAccessPolicy(_get_valid_settings(), get_source_registry())
     except ValueError as error:
         raise WorkspaceAdapterError("configuration_invalid", str(error), 503) from error
 
@@ -183,8 +203,18 @@ def workspace_drive_list(
     limit: Annotated[int, Query(ge=1)] = 10,
 ) -> DriveListResponse:
     safe_limit = DriveReadPolicy.validate_list_limit(limit)
+    files = adapter.list_files(limit=safe_limit, source_policy=source_policy)
+    if files:
+        source_ids = {item.source.id for item in files}
+        classifications = {item.source.classification for item in files}
+        request.state.source_id = (
+            next(iter(source_ids)) if len(source_ids) == 1 else "multiple"
+        )
+        request.state.classification = (
+            next(iter(classifications)) if len(classifications) == 1 else "mixed"
+        )
     return DriveListResponse(
-        files=adapter.list_files(limit=safe_limit, source_policy=source_policy),
+        files=files,
         request_id=request.state.request_id,
     )
 
@@ -200,9 +230,20 @@ def workspace_document(
     safe_id = ContentReadPolicy.validate_resource_id(document_id)
     ContentReadPolicy.validate_document_limit(adapter.max_chars)
     resource = workspace_adapter.get_resource(safe_id)
-    source_policy.authorize(resource)
+    source_context = source_policy.authorize(resource)
+    request.state.source_id = source_context.source_id
+    request.state.classification = source_context.classification.value
     result = adapter.get_document(resource, max_chars=adapter.max_chars)
-    return result.model_copy(update={"request_id": request.state.request_id})
+    return result.model_copy(
+        update={
+            "request_id": request.state.request_id,
+            "source": SourceMetadata(
+                id=source_context.source_id,
+                name=source_context.source_name,
+                classification=source_context.classification.value,
+            ),
+        }
+    )
 
 
 @app.get("/workspace/sheets/{spreadsheet_id}", response_model=SheetRangeContent)
@@ -219,6 +260,17 @@ def workspace_sheet_range(
         range_, max_cells=adapter.max_cells
     )
     resource = workspace_adapter.get_resource(safe_id)
-    source_policy.authorize(resource)
+    source_context = source_policy.authorize(resource)
+    request.state.source_id = source_context.source_id
+    request.state.classification = source_context.classification.value
     result = adapter.get_range(resource, range_name=safe_range)
-    return result.model_copy(update={"request_id": request.state.request_id})
+    return result.model_copy(
+        update={
+            "request_id": request.state.request_id,
+            "source": SourceMetadata(
+                id=source_context.source_id,
+                name=source_context.source_name,
+                classification=source_context.classification.value,
+            ),
+        }
+    )

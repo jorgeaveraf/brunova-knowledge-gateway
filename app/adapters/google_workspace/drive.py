@@ -9,8 +9,13 @@ from googleapiclient.errors import HttpError
 
 from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
-from app.adapters.google_workspace.models import DriveFile, WorkspaceResource
+from app.adapters.google_workspace.models import (
+    DriveFile,
+    SourceMetadata,
+    WorkspaceResource,
+)
 from app.config.settings import Settings
+from app.policies.classification import SourceContext
 from app.policies.source_access import SourceAccessPolicy
 
 ServiceBuilder = Callable[..., Any]
@@ -71,7 +76,8 @@ class GoogleWorkspaceAdapter:
             drive = self._service_builder(
                 "drive", "v3", credentials=credentials, cache_discovery=False
             )
-            for drive_id in sources.shared_drive_ids:
+            for allowed_source in sources.shared_drives:
+                drive_id = allowed_source.definition.location_id
                 response = (
                     drive.files()
                     .list(
@@ -87,12 +93,18 @@ class GoogleWorkspaceAdapter:
                     .execute()
                 )
                 self._append_allowed_files(
-                    response, files, seen_ids, source_policy, limit
+                    response,
+                    files,
+                    seen_ids,
+                    source_policy,
+                    allowed_source.context,
+                    limit,
                 )
                 if len(files) >= limit:
                     break
 
-            for folder_id in sources.folder_ids:
+            for allowed_source in sources.folders:
+                folder_id = allowed_source.definition.location_id
                 if len(files) >= limit:
                     break
                 response = (
@@ -109,7 +121,12 @@ class GoogleWorkspaceAdapter:
                     .execute()
                 )
                 self._append_allowed_files(
-                    response, files, seen_ids, source_policy, limit
+                    response,
+                    files,
+                    seen_ids,
+                    source_policy,
+                    allowed_source.context,
+                    limit,
                 )
             return files
         except (GoogleAuthError, HttpError) as error:
@@ -161,6 +178,7 @@ class GoogleWorkspaceAdapter:
         files: list[DriveFile],
         seen_ids: set[str],
         source_policy: SourceAccessPolicy,
+        source_context: SourceContext,
         limit: int,
     ) -> None:
         for item in response.get("files", []):
@@ -177,6 +195,11 @@ class GoogleWorkspaceAdapter:
                     id=resource_id,
                     name=item.get("name", ""),
                     type=MIME_TYPES.get(item.get("mimeType"), "file"),
+                    source=SourceMetadata(
+                        id=source_context.source_id,
+                        name=source_context.source_name,
+                        classification=source_context.classification.value,
+                    ),
                 )
             )
             if len(files) >= limit:

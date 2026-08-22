@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from app.source_registry import Classification
+
 SERVICE_NAME = "brunova-knowledge-gateway"
 
 
@@ -33,10 +35,17 @@ class WorkspaceStatusResponse(BaseModel):
         )
 
 
+class SourceMetadata(BaseModel):
+    id: str
+    name: str
+    classification: Classification
+
+
 class DriveFile(BaseModel):
     id: str
     name: str
     type: str
+    source: SourceMetadata
 
 
 class DriveListResponse(BaseModel):
@@ -53,6 +62,7 @@ class GoogleDocContent(BaseModel):
     truncated: bool
     limit: int
     request_id: Optional[str] = None
+    source: Optional[SourceMetadata] = None
 
 
 class SheetRangeContent(BaseModel):
@@ -60,6 +70,7 @@ class SheetRangeContent(BaseModel):
     range: str
     values: list[list[object]]
     request_id: Optional[str] = None
+    source: Optional[SourceMetadata] = None
 
 
 @dataclass(frozen=True)

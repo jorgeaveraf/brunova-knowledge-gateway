@@ -11,11 +11,10 @@ class Settings:
     workspace_service_account_email: str
     workspace_doc_max_chars: int
     workspace_sheet_max_cells: int
-    workspace_allowed_shared_drive_ids: tuple[str, ...]
-    workspace_allowed_folder_ids: tuple[str, ...]
     workspace_blocked_source_ids: tuple[str, ...]
     workspace_source_max_depth: int
     workspace_audit_enabled: bool
+    workspace_source_registry_path: str
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -61,11 +60,11 @@ class Settings:
             service_account,
             parsed_doc_max_chars,
             parsed_sheet_max_cells,
-            _csv_ids("WORKSPACE_ALLOWED_SHARED_DRIVE_IDS"),
-            _csv_ids("WORKSPACE_ALLOWED_FOLDER_IDS"),
             _csv_ids("WORKSPACE_BLOCKED_SOURCE_IDS"),
             parsed_source_max_depth,
             _environment_bool("WORKSPACE_AUDIT_ENABLED", default=True),
+            os.getenv("WORKSPACE_SOURCE_REGISTRY_PATH", "").strip()
+            or "app/config/sources.yaml",
         )
 
 

@@ -4,9 +4,12 @@ from app.adapters.google_workspace.models import (
     DriveFile,
     GoogleDocContent,
     SheetRangeContent,
+    SourceMetadata,
     WorkspaceResource,
 )
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
+from app.policies.classification import SourceContext
+from app.source_registry import Classification
 from app.main import (
     app,
     get_docs_adapter,
@@ -24,7 +27,18 @@ class FakeWorkspaceAdapter:
 
     def list_files(self, *, limit, source_policy):
         assert limit == 2
-        return [DriveFile(id="document_12345", name="Roadmap", type="document")]
+        return [
+            DriveFile(
+                id="document_12345",
+                name="Roadmap",
+                type="document",
+                source=SourceMetadata(
+                    id="career_ops",
+                    name="Career Ops",
+                    classification="management_only",
+                ),
+            )
+        ]
 
     def get_resource(self, resource_id):
         mime_type = (
@@ -45,6 +59,11 @@ class FakeWorkspaceAdapter:
 class FakeSourcePolicy:
     def authorize(self, resource):
         assert "allowed_folder_123" in resource.ancestor_ids
+        return SourceContext(
+            source_id="career_ops",
+            source_name="Career Ops",
+            classification=Classification.MANAGEMENT_ONLY,
+        )
 
 
 class RejectSourcePolicy:
@@ -115,7 +134,16 @@ def test_drive_list_response():
     assert response.status_code == 200
     assert response.json() == {
         "files": [
-            {"id": "document_12345", "name": "Roadmap", "type": "document"}
+            {
+                "id": "document_12345",
+                "name": "Roadmap",
+                "type": "document",
+                "source": {
+                    "id": "career_ops",
+                    "name": "Career Ops",
+                    "classification": "management_only",
+                },
+            }
         ],
         "request_id": response.headers["X-Correlation-ID"],
     }
@@ -147,6 +175,11 @@ def test_document_content_response():
     assert response.json()["text"] == "controlled content"
     assert response.json()["limit"] == 20
     assert response.json()["truncated"] is False
+    assert response.json()["source"] == {
+        "id": "career_ops",
+        "name": "Career Ops",
+        "classification": "management_only",
+    }
 
 
 def test_sheet_range_response():
@@ -166,6 +199,11 @@ def test_sheet_range_response():
         "range": "A1:F10",
         "values": [["Header"], ["Value"]],
         "request_id": response.headers["X-Correlation-ID"],
+        "source": {
+            "id": "career_ops",
+            "name": "Career Ops",
+            "classification": "management_only",
+        },
     }
 
 

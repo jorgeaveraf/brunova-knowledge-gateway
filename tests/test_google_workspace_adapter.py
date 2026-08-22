@@ -3,6 +3,7 @@ from unittest.mock import Mock
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.config.settings import Settings
 from app.policies.source_access import SourceAccessPolicy
+from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
 
 
 def settings():
@@ -11,12 +12,27 @@ def settings():
         workspace_service_account_email="gateway@project.iam.gserviceaccount.com",
         workspace_doc_max_chars=10000,
         workspace_sheet_max_cells=1000,
-        workspace_allowed_shared_drive_ids=(),
-        workspace_allowed_folder_ids=("allowed_folder_123",),
         workspace_blocked_source_ids=(),
         workspace_source_max_depth=20,
         workspace_audit_enabled=True,
+        workspace_source_registry_path="app/config/sources.yaml",
     )
+
+
+def source_registry():
+    source = SourceDefinition.model_validate(
+        {
+            "id": "career_ops",
+            "name": "Career Ops",
+            "system": "google_workspace",
+            "location_type": "folder",
+            "location_id": "allowed_folder_123",
+            "classification": "management_only",
+            "owner": ["Jorge", "Nat"],
+            "status": "active",
+        }
+    )
+    return SourceRegistry(SourceRegistryDocument(version=1, sources=(source,)))
 
 
 def test_adapter_builds_drive_client_with_delegated_credentials():
@@ -61,11 +77,20 @@ def test_list_files_returns_only_normalized_basic_metadata():
     )
 
     result = adapter.list_files(
-        limit=5, source_policy=SourceAccessPolicy(settings())
+        limit=5, source_policy=SourceAccessPolicy(settings(), source_registry())
     )
 
     assert [item.model_dump() for item in result] == [
-        {"id": "document_12345", "name": "Plan", "type": "document"},
+        {
+            "id": "document_12345",
+            "name": "Plan",
+            "type": "document",
+            "source": {
+                "id": "career_ops",
+                "name": "Career Ops",
+                "classification": "management_only",
+            },
+        },
     ]
     files.list.assert_called_once_with(
         q="'allowed_folder_123' in parents and trashed=false",

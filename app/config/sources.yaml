@@ -1,0 +1,12 @@
+version: 1
+sources:
+  - id: career_ops
+    name: Career Ops
+    system: google_workspace
+    location_type: folder
+    location_id: 1ewKeH5MdmCklk9NRoaXWBOYcwk7WXfw3
+    classification: management_only
+    owner:
+      - Jorge
+      - Nat
+    status: active

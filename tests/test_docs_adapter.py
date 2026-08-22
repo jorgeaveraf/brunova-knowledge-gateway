@@ -11,11 +11,10 @@ def settings():
         workspace_service_account_email="gateway@project.iam.gserviceaccount.com",
         workspace_doc_max_chars=10,
         workspace_sheet_max_cells=100,
-        workspace_allowed_shared_drive_ids=(),
-        workspace_allowed_folder_ids=("allowed_folder_123",),
         workspace_blocked_source_ids=(),
         workspace_source_max_depth=20,
         workspace_audit_enabled=True,
+        workspace_source_registry_path="app/config/sources.yaml",
     )
 
 
@@ -76,6 +75,7 @@ def test_docs_adapter_returns_metadata_and_truncated_nested_text():
         "truncated": True,
         "limit": 5,
         "request_id": None,
+        "source": None,
     }
     documents.get.assert_called_once_with(
         documentId="document_12345", includeTabsContent=True

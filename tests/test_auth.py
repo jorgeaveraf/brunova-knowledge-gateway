@@ -14,11 +14,10 @@ def test_build_delegated_credentials_uses_adc_remote_signer_and_subject():
         workspace_service_account_email="gateway@project.iam.gserviceaccount.com",
         workspace_doc_max_chars=10000,
         workspace_sheet_max_cells=1000,
-        workspace_allowed_shared_drive_ids=(),
-        workspace_allowed_folder_ids=("allowed_folder_123",),
         workspace_blocked_source_ids=(),
         workspace_source_max_depth=20,
         workspace_audit_enabled=True,
+        workspace_source_registry_path="app/config/sources.yaml",
     )
     source_credentials = Mock()
     signer = Mock()

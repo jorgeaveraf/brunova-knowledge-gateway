@@ -18,7 +18,13 @@ def test_audit_event_contains_metadata_but_no_content(monkeypatch):
     monkeypatch.setenv("WORKSPACE_DELEGATED_USER", "reader@example.com")
     log_info = Mock()
     monkeypatch.setattr("app.audit.audit_logger.info", log_info)
-    request = SimpleNamespace(state=SimpleNamespace(request_id="request-123"))
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            request_id="request-123",
+            source_id="career_ops",
+            classification="management_only",
+        )
+    )
 
     emit_audit_event(
         request,
@@ -34,5 +40,8 @@ def test_audit_event_contains_metadata_but_no_content(monkeypatch):
     assert event["actor"] == "gateway"
     assert event["delegated_user"] == "reader@example.com"
     assert event["action"] == "read_document"
+    assert event["source_id"] == "career_ops"
+    assert event["classification"] == "management_only"
     assert "text" not in event
     assert "values" not in event
+    assert "owner" not in event

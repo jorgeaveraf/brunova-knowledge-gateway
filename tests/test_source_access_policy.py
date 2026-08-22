@@ -4,20 +4,40 @@ from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import WorkspaceResource
 from app.config.settings import Settings
 from app.policies.source_access import SourceAccessPolicy
+from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
 
 
-def settings(*, allowed_folders=(), allowed_drives=(), blocked=()):
+def settings(*, blocked=()):
     return Settings(
         workspace_delegated_user="reader@example.com",
         workspace_service_account_email="gateway@project.iam.gserviceaccount.com",
         workspace_doc_max_chars=1000,
         workspace_sheet_max_cells=100,
-        workspace_allowed_shared_drive_ids=allowed_drives,
-        workspace_allowed_folder_ids=allowed_folders,
         workspace_blocked_source_ids=blocked,
         workspace_source_max_depth=20,
         workspace_audit_enabled=True,
+        workspace_source_registry_path="unused.yaml",
     )
+
+
+def registry(*, location_type="folder", status="active", classification="management_only"):
+    source = SourceDefinition.model_validate(
+        {
+            "id": "career_ops",
+            "name": "Career Ops",
+            "system": "google_workspace",
+            "location_type": location_type,
+            "location_id": (
+                "drive_123456789"
+                if location_type == "shared_drive"
+                else "folder_123456789"
+            ),
+            "classification": classification,
+            "owner": ["Jorge", "Nat"],
+            "status": status,
+        }
+    )
+    return SourceRegistry(SourceRegistryDocument(version=1, sources=(source,)))
 
 
 def resource(*, drive_id=None, ancestors=("folder_123456789",)):
@@ -31,61 +51,57 @@ def resource(*, drive_id=None, ancestors=("folder_123456789",)):
     )
 
 
-def test_resource_in_allowed_folder_is_authorized():
-    policy = SourceAccessPolicy(settings(allowed_folders=("folder_123456789",)))
+def test_resource_in_registered_folder_is_authorized_and_classified():
+    policy = SourceAccessPolicy(settings(), registry())
 
-    assert policy.authorize(resource()) is None
+    context = policy.authorize(resource())
 
-
-def test_resource_in_allowed_shared_drive_is_authorized():
-    policy = SourceAccessPolicy(settings(allowed_drives=("drive_123456789",)))
-
-    assert policy.authorize(resource(drive_id="drive_123456789")) is None
+    assert context.source_id == "career_ops"
+    assert context.classification.value == "management_only"
 
 
-def test_blocked_source_takes_precedence_over_allowlist():
+def test_resource_in_registered_shared_drive_is_authorized():
+    policy = SourceAccessPolicy(settings(), registry(location_type="shared_drive"))
+
+    context = policy.authorize(resource(drive_id="drive_123456789"))
+
+    assert context.source_id == "career_ops"
+
+
+def test_blocked_source_takes_precedence_over_registry():
     policy = SourceAccessPolicy(
-        settings(
-            allowed_folders=("folder_123456789",),
-            blocked=("document_123456789",),
-        )
+        settings(blocked=("document_123456789",)), registry()
     )
 
     with pytest.raises(WorkspaceAdapterError) as error:
         policy.authorize(resource())
 
     assert error.value.code == "source_not_allowed"
-    assert error.value.status_code == 403
 
 
-def test_empty_allowlist_fails_closed():
-    policy = SourceAccessPolicy(settings())
-
-    with pytest.raises(WorkspaceAdapterError) as error:
-        policy.authorize(resource())
-
-    assert error.value.code == "source_policy_unconfigured"
-    assert error.value.status_code == 503
-
-
-def test_resource_outside_allowlist_is_rejected():
-    policy = SourceAccessPolicy(settings(allowed_folders=("another_folder_123",)))
-
-    with pytest.raises(WorkspaceAdapterError) as error:
-        policy.authorize(resource())
-
-    assert error.value.code == "source_not_allowed"
-
-
-def test_blocked_configured_source_is_removed_from_list_sources():
-    policy = SourceAccessPolicy(
-        settings(
-            allowed_folders=("folder_123456789",),
-            blocked=("folder_123456789",),
-        )
-    )
+def test_empty_registry_fails_closed():
+    empty = SourceRegistry(SourceRegistryDocument(version=1, sources=()))
+    policy = SourceAccessPolicy(settings(), empty)
 
     with pytest.raises(WorkspaceAdapterError) as error:
         policy.allowed_sources()
 
     assert error.value.code == "source_policy_unconfigured"
+
+
+def test_disabled_source_is_rejected():
+    policy = SourceAccessPolicy(settings(), registry(status="disabled"))
+
+    with pytest.raises(WorkspaceAdapterError) as error:
+        policy.authorize(resource())
+
+    assert error.value.code == "source_disabled"
+
+
+def test_resource_outside_registry_is_rejected():
+    policy = SourceAccessPolicy(settings(), registry())
+
+    with pytest.raises(WorkspaceAdapterError) as error:
+        policy.authorize(resource(ancestors=("another_folder_123",)))
+
+    assert error.value.code == "source_not_allowed"

@@ -75,6 +75,8 @@ def emit_audit_event(
         "result": result,
         "http_status": http_status,
         "request_id": request.state.request_id,
+        "source_id": getattr(request.state, "source_id", None),
+        "classification": getattr(request.state, "classification", None),
     }
     if error_code:
         event["error_code"] = error_code
