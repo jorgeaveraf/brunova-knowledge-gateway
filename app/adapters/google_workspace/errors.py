@@ -77,6 +77,24 @@ def map_google_error(error: Exception) -> WorkspaceAdapterError:
                 "The delegated identity does not have permission to perform this read operation.",
                 403,
             )
+        if status == 404:
+            return WorkspaceAdapterError(
+                "resource_not_found",
+                "The requested Workspace resource was not found or is not visible to the delegated user.",
+                404,
+            )
+        if status == 400:
+            return WorkspaceAdapterError(
+                "invalid_workspace_request",
+                "Google Workspace rejected the resource identifier or range.",
+                422,
+            )
+        if status == 429:
+            return WorkspaceAdapterError(
+                "workspace_rate_limited",
+                "Google Workspace temporarily rate limited the request.",
+                503,
+            )
 
     return WorkspaceAdapterError(
         "workspace_api_error",

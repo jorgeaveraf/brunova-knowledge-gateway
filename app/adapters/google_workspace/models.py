@@ -25,9 +25,26 @@ class WorkspaceStatusResponse(BaseModel):
 
 
 class DriveFile(BaseModel):
+    id: str
     name: str
     type: str
 
 
 class DriveListResponse(BaseModel):
     files: list[DriveFile]
+
+
+class GoogleDocContent(BaseModel):
+    id: str
+    name: str
+    mime_type: str
+    modified_time: str
+    text: str
+    truncated: bool
+    limit: int
+
+
+class SheetRangeContent(BaseModel):
+    spreadsheet_id: str
+    range: str
+    values: list[list[object]]

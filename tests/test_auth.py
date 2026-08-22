@@ -12,6 +12,8 @@ def test_build_delegated_credentials_uses_adc_remote_signer_and_subject():
     settings = Settings(
         workspace_delegated_user="reader@example.com",
         workspace_service_account_email="gateway@project.iam.gserviceaccount.com",
+        workspace_doc_max_chars=10000,
+        workspace_sheet_max_cells=1000,
     )
     source_credentials = Mock()
     signer = Mock()

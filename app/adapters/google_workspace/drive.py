@@ -61,10 +61,11 @@ class GoogleWorkspaceAdapter:
     def list_files(self, *, limit: int) -> list[DriveFile]:
         response = self._execute_list(
             page_size=limit,
-            fields="files(name,mimeType)",
+            fields="files(id,name,mimeType)",
         )
         return [
             DriveFile(
+                id=item.get("id", ""),
                 name=item.get("name", ""),
                 type=MIME_TYPES.get(item.get("mimeType"), "file"),
             )
