@@ -12,6 +12,7 @@ from app.adapters.google_workspace.models import (
     WorkspaceResource,
 )
 from app.config.settings import Settings
+from app.policies.content_mutation import ContentMutationPolicy
 from app.policies.source_access import SourceAccessPolicy
 from app.runtime import KnowledgeRuntime
 from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
@@ -39,7 +40,7 @@ def settings():
     )
 
 
-def registry():
+def registry(*, mutation_enabled=True):
     source = SourceDefinition.model_validate(
         {
             "id": "career_ops",
@@ -50,6 +51,14 @@ def registry():
             "classification": "management_only",
             "owner": ["Jorge", "Nat"],
             "status": "active",
+            "capabilities": {
+                "read": True,
+                "create": mutation_enabled,
+                "update": mutation_enabled,
+                "move": mutation_enabled,
+                "delete": False,
+                "share": False,
+            },
         }
     )
     return SourceRegistry(SourceRegistryDocument(version=1, sources=(source,)))
@@ -58,6 +67,8 @@ def registry():
 class FakeWorkspaceAdapter:
     def __init__(self, *, in_source=True):
         self.in_source = in_source
+        self.created = []
+        self.moved = []
 
     def list_source_files(self, *, source, limit, source_policy):
         assert source.definition.id == "career_ops"
@@ -86,13 +97,18 @@ class FakeWorkspaceAdapter:
         ]
 
     def get_resource(self, resource_id):
+        is_destination = resource_id == "destination_folder_123"
         return WorkspaceResource(
             id=resource_id,
             name="Controlled resource",
             mime_type=(
-                "application/vnd.google-apps.spreadsheet"
-                if resource_id.startswith("spreadsheet")
-                else "application/vnd.google-apps.document"
+                "application/vnd.google-apps.folder"
+                if is_destination
+                else (
+                    "application/vnd.google-apps.spreadsheet"
+                    if resource_id.startswith("spreadsheet")
+                    else "application/vnd.google-apps.document"
+                )
             ),
             modified_time="2026-08-22T00:00:00Z",
             drive_id=None,
@@ -101,11 +117,39 @@ class FakeWorkspaceAdapter:
                 if self.in_source
                 else ("another_folder_123",)
             ),
+            parent_ids=("allowed_folder_123",),
+        )
+
+    def create_document(self, *, source, name):
+        self.created.append((source.definition.id, name))
+        return WorkspaceResource(
+            id="created_document_123",
+            name=name,
+            mime_type="application/vnd.google-apps.document",
+            modified_time="2026-08-22T00:00:00Z",
+            drive_id=None,
+            ancestor_ids=("allowed_folder_123",),
+            parent_ids=("allowed_folder_123",),
+        )
+
+    def move_resource(self, *, resource, destination):
+        self.moved.append((resource.id, destination.id))
+        return WorkspaceResource(
+            id=resource.id,
+            name=resource.name,
+            mime_type=resource.mime_type,
+            modified_time=resource.modified_time,
+            drive_id=resource.drive_id,
+            ancestor_ids=(destination.id, "allowed_folder_123"),
+            parent_ids=(destination.id,),
         )
 
 
 class FakeDocsAdapter:
     max_chars = 100
+
+    def __init__(self):
+        self.appended = []
 
     def get_document(self, resource, *, max_chars):
         return GoogleDocContent(
@@ -117,6 +161,9 @@ class FakeDocsAdapter:
             truncated=False,
             limit=max_chars,
         )
+
+    def append_text(self, resource, *, text):
+        self.appended.append((resource.id, text))
 
 
 class FakeSheetsAdapter:
@@ -176,18 +223,20 @@ class MemoryObjectBackend:
         self.generation += 1
 
 
-def runtime(*, in_source=True):
-    source_registry = registry()
+def runtime(*, in_source=True, mutation_enabled=True):
+    source_registry = registry(mutation_enabled=mutation_enabled)
     runtime_settings = settings()
+    source_policy = SourceAccessPolicy(runtime_settings, source_registry)
     return KnowledgeRuntime(
         settings=runtime_settings,
         registry=source_registry,
-        source_policy=SourceAccessPolicy(runtime_settings, source_registry),
+        source_policy=source_policy,
         workspace_adapter=FakeWorkspaceAdapter(in_source=in_source),
         docs_adapter=FakeDocsAdapter(),
         sheets_adapter=FakeSheetsAdapter(),
         source_discovery=FakeDiscovery(source_registry),
         proposal_store=YamlSourceProposalStore(MemoryObjectBackend()),
+        mutation_policy=ContentMutationPolicy(source_registry, source_policy),
     )
 
 
@@ -195,7 +244,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_nine_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_twelve_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -214,6 +263,9 @@ def test_mcp_exposes_only_the_nine_governed_tools(monkeypatch):
         "create_source_proposal",
         "list_source_proposals",
         "get_source_proposal",
+        "create_source_artifact",
+        "update_source_artifact",
+        "move_source_artifact",
     }
 
 
@@ -352,6 +404,144 @@ def test_mcp_candidate_details_reject_unknown_candidate(monkeypatch):
     assert result.is_error is True
     assert "source_candidate_not_found" in result.content[0].text
     assert audit.call_args.kwargs["error_code"] == "source_candidate_not_found"
+
+
+def test_mcp_governed_mutations_require_capabilities_scope_and_approval(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            created = await client.call_tool(
+                "create_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "name": "Controlled Test",
+                    "type": "document",
+                    "approval_reference": "decision-v013-test",
+                },
+            )
+            updated = await client.call_tool(
+                "update_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "document_id": "created_document_123",
+                    "change": "Approved bounded addition.",
+                    "approval_reference": "decision-v013-test",
+                },
+            )
+            moved = await client.call_tool(
+                "move_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "created_document_123",
+                    "destination_folder_id": "destination_folder_123",
+                    "approval_reference": "decision-v013-test",
+                },
+            )
+            return created, updated, moved
+
+    created, updated, moved = run(scenario())
+
+    assert created.is_error is False
+    assert created.structured_content["status"] == "created"
+    assert updated.is_error is False
+    assert updated.structured_content["status"] == "updated"
+    assert moved.is_error is False
+    assert moved.structured_content["status"] == "moved"
+    assert gateway_runtime.workspace_adapter.created == [
+        ("career_ops", "Controlled Test")
+    ]
+    assert gateway_runtime.docs_adapter.appended == [
+        ("created_document_123", "Approved bounded addition.")
+    ]
+    assert gateway_runtime.workspace_adapter.moved == [
+        ("created_document_123", "destination_folder_123")
+    ]
+    mutation_audits = audit.call_args_list[-3:]
+    assert [call.kwargs["action"] for call in mutation_audits] == [
+        "create_source_artifact",
+        "update_source_artifact",
+        "move_source_artifact",
+    ]
+    assert all(
+        call.kwargs["approval_reference"] == "decision-v013-test"
+        for call in mutation_audits
+    )
+    assert all("change" not in call.kwargs for call in mutation_audits)
+
+
+def test_mcp_mutation_blocks_missing_approval_and_capability(monkeypatch):
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        disabled_runtime = runtime(mutation_enabled=False)
+        monkeypatch.setattr(
+            mcp_module,
+            "get_runtime_gateway",
+            lambda: disabled_runtime,
+        )
+        async with Client(mcp_module.mcp_server) as client:
+            missing_approval = await client.call_tool(
+                "create_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "name": "Blocked Test",
+                    "type": "document",
+                },
+            )
+            denied_capability = await client.call_tool(
+                "create_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "name": "Blocked Test",
+                    "type": "document",
+                    "approval_reference": "decision-v013-test",
+                },
+            )
+            return missing_approval, denied_capability
+
+    missing_approval, denied_capability = run(scenario())
+
+    assert missing_approval.is_error is True
+    assert "mutation_approval_required" in missing_approval.content[0].text
+    assert denied_capability.is_error is True
+    assert "source_capability_denied" in denied_capability.content[0].text
+    assert [call.kwargs["error_code"] for call in audit.call_args_list] == [
+        "mutation_approval_required",
+        "source_capability_denied",
+    ]
+
+
+def test_mcp_update_blocks_document_outside_selected_source(monkeypatch):
+    monkeypatch.setattr(
+        mcp_module,
+        "get_runtime_gateway",
+        lambda: runtime(in_source=False),
+    )
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "update_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "document_id": "outside_document_123",
+                    "change": "Must not be written.",
+                    "approval_reference": "decision-v013-test",
+                },
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is True
+    assert "resource_not_in_source" in result.content[0].text
+    assert audit.call_args.kwargs["error_code"] == "resource_not_in_source"
 
 
 def test_mcp_lists_sources_and_filters_authorized_documents(monkeypatch):

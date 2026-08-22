@@ -20,6 +20,19 @@ class SourceStatus(str, Enum):
     DISABLED = "disabled"
 
 
+class SourceCapabilities(BaseModel):
+    """Explicit operations approved for one versioned source."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    read: bool = True
+    create: bool = False
+    update: bool = False
+    move: bool = False
+    delete: bool = False
+    share: bool = False
+
+
 class SourceDefinition(BaseModel):
     model_config = ConfigDict(populate_by_name=True, frozen=True)
 
@@ -31,6 +44,7 @@ class SourceDefinition(BaseModel):
     classification: Classification
     owners: tuple[str, ...] = Field(alias="owner", min_length=1)
     status: SourceStatus
+    capabilities: SourceCapabilities = Field(default_factory=SourceCapabilities)
 
 
 class SourceRegistryDocument(BaseModel):

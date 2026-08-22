@@ -1,4 +1,4 @@
-"""Controlled, read-only Google Docs content retrieval."""
+"""Controlled Google Docs retrieval and governed append-only mutation."""
 
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
@@ -62,6 +62,46 @@ class GoogleDocsAdapter:
             )
         except WorkspaceAdapterError:
             raise
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+        except OSError as error:
+            raise WorkspaceAdapterError(
+                "credentials_unavailable",
+                "Application Default Credentials are not available to the runtime.",
+                503,
+            ) from error
+
+    def append_text(self, resource: WorkspaceResource, *, text: str) -> None:
+        """Apply the only supported document update: append bounded text."""
+
+        if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+            raise WorkspaceAdapterError(
+                "resource_type_invalid",
+                "The requested resource is not a native Google Doc.",
+                422,
+            )
+        try:
+            credentials = self._credentials_factory(self._settings)
+            docs = self._service_builder(
+                "docs", "v1", credentials=credentials, cache_discovery=False
+            )
+            (
+                docs.documents()
+                .batchUpdate(
+                    documentId=resource.id,
+                    body={
+                        "requests": [
+                            {
+                                "insertText": {
+                                    "endOfSegmentLocation": {},
+                                    "text": text,
+                                }
+                            }
+                        ]
+                    },
+                )
+                .execute()
+            )
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
         except OSError as error:

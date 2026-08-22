@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
+from app.adapters.google_workspace.models import WorkspaceResource
 from app.config.settings import Settings
 from app.policies.source_access import SourceAccessPolicy
 from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
@@ -185,4 +186,89 @@ def test_discovery_detects_unregistered_shared_drives_and_root_folders():
         pageSize=4,
         fields="files(id,name)",
         orderBy="name",
+    )
+
+
+def test_create_document_targets_only_authorized_source_root():
+    create_request = Mock()
+    create_request.execute.return_value = {
+        "id": "created_document_123",
+        "name": "Controlled Template",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": ["allowed_folder_123"],
+    }
+    files = Mock()
+    files.create.return_value = create_request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    registry = source_registry()
+    allowed = SourceAccessPolicy(settings(), registry).authorize_source(
+        registry.get("career_ops")
+    )
+
+    created = adapter.create_document(source=allowed, name="Controlled Template")
+
+    assert created.id == "created_document_123"
+    assert created.parent_ids == ("allowed_folder_123",)
+    files.create.assert_called_once_with(
+        body={
+            "name": "Controlled Template",
+            "mimeType": "application/vnd.google-apps.document",
+            "parents": ["allowed_folder_123"],
+        },
+        fields="id,name,mimeType,modifiedTime,driveId,parents",
+        supportsAllDrives=True,
+    )
+
+
+def test_move_resource_uses_explicit_parent_transition():
+    update_request = Mock()
+    update_request.execute.return_value = {
+        "id": "document_12345",
+        "name": "Controlled Template",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": ["destination_folder_123"],
+    }
+    files = Mock()
+    files.update.return_value = update_request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Controlled Template",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+        parent_ids=("old_folder_123",),
+    )
+    destination = WorkspaceResource(
+        id="destination_folder_123",
+        name="Validated",
+        mime_type="application/vnd.google-apps.folder",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+        parent_ids=("allowed_folder_123",),
+    )
+
+    moved = adapter.move_resource(resource=resource, destination=destination)
+
+    assert moved.parent_ids == ("destination_folder_123",)
+    files.update.assert_called_once_with(
+        fileId="document_12345",
+        addParents="destination_folder_123",
+        removeParents="old_folder_123",
+        fields="id,name,mimeType,modifiedTime,driveId,parents",
+        supportsAllDrives=True,
     )

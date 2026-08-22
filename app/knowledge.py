@@ -7,9 +7,12 @@ from app.adapters.google_workspace.models import (
     DriveFile,
     GoogleDocContent,
     SheetRangeContent,
+    SourceArtifact,
+    SourceArtifactMutationResult,
     SourceMetadata,
 )
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
+from app.policies.content_mutation import ContentMutationPolicy, MutationOperation
 from app.policies.source_access import SourceAccessPolicy
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.source_discovery.interface import (
@@ -33,6 +36,7 @@ from app.source_registry import (
 )
 
 SOURCE_CANDIDATE_LOOKUP_LIMIT = 100
+GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
 
 
 def registered_source(registry: SourceRegistry, source_id: str) -> SourceDefinition:
@@ -116,6 +120,119 @@ def registered_source_proposal(
     proposal_id: str,
 ) -> SourceProposalDetails:
     return SourceProposalDetails.from_record(proposal_store.get(proposal_id))
+
+
+def create_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    source_id: str,
+    name: str,
+    artifact_type: str,
+    approval_reference: str,
+) -> SourceArtifactMutationResult:
+    if artifact_type != "document":
+        raise WorkspaceAdapterError(
+            "mutation_type_not_supported",
+            "Only native Google Docs can be created by this Gateway.",
+            422,
+        )
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.CREATE,
+        approval_reference=approval_reference,
+    )
+    safe_name = mutation_policy.validate_name(name)
+    resource = workspace_adapter.create_document(
+        source=allowed_source,
+        name=safe_name,
+    )
+    return _mutation_result(resource, allowed_source, status="created")
+
+
+def update_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    source_id: str,
+    document_id: str,
+    change: str,
+    approval_reference: str,
+) -> SourceArtifactMutationResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.UPDATE,
+        approval_reference=approval_reference,
+    )
+    safe_id = mutation_policy.validate_resource_id(document_id)
+    safe_change = mutation_policy.validate_change(change)
+    resource = workspace_adapter.get_resource(safe_id)
+    source_policy.authorize_resource_for_source(resource, allowed_source)
+    if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+        raise WorkspaceAdapterError(
+            "resource_type_invalid",
+            "Only native Google Docs can be updated by this Gateway.",
+            422,
+        )
+    docs_adapter.append_text(resource, text=safe_change)
+    return _mutation_result(resource, allowed_source, status="updated")
+
+
+def move_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    source_id: str,
+    artifact_id: str,
+    destination_folder_id: str,
+    approval_reference: str,
+) -> SourceArtifactMutationResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.MOVE,
+        approval_reference=approval_reference,
+    )
+    safe_artifact_id = mutation_policy.validate_resource_id(artifact_id)
+    safe_destination_id = mutation_policy.validate_resource_id(destination_folder_id)
+    resource = workspace_adapter.get_resource(safe_artifact_id)
+    destination = workspace_adapter.get_resource(safe_destination_id)
+    source_policy.authorize_resource_for_source(resource, allowed_source)
+    source_policy.authorize_resource_for_source(destination, allowed_source)
+    if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+        raise WorkspaceAdapterError(
+            "resource_type_invalid",
+            "Only native Google Docs can be moved by this Gateway.",
+            422,
+        )
+    moved = workspace_adapter.move_resource(
+        resource=resource,
+        destination=destination,
+    )
+    return _mutation_result(moved, allowed_source, status="moved")
+
+
+def _mutation_result(
+    resource,
+    source,
+    *,
+    status: str,
+) -> SourceArtifactMutationResult:
+    return SourceArtifactMutationResult(
+        artifact=SourceArtifact(
+            id=resource.id,
+            name=resource.name,
+            type="document",
+        ),
+        source=SourceMetadata(
+            id=source.context.source_id,
+            name=source.context.source_name,
+            classification=source.context.classification,
+        ),
+        status=status,
+    )
 
 
 def list_authorized_source_files(

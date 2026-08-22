@@ -147,3 +147,27 @@ def test_proposal_audit_contains_receipt_without_review_reason(monkeypatch):
     assert "reason" not in event
     assert "permissions" not in event
     assert "content" not in event
+
+
+def test_mutation_audit_contains_approval_but_not_change_content(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+
+    emit_audit_record(
+        request_id="mutation-request-123",
+        action="update_source_artifact",
+        resource_id="document_123456789",
+        resource_type="google_document",
+        result="success",
+        http_status=200,
+        source_id="brunova_template",
+        source_classification="management_only",
+        approval_reference="decision-v013-test",
+    )
+
+    event = json.loads(log_info.call_args.args[0])
+    assert event["approval_reference"] == "decision-v013-test"
+    assert event["source_id"] == "brunova_template"
+    assert "change" not in event
+    assert "text" not in event

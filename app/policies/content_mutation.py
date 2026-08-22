@@ -1,0 +1,102 @@
+"""Fail-closed authorization and input validation for governed mutations."""
+
+import re
+from enum import Enum
+
+from app.adapters.google_workspace.errors import WorkspaceAdapterError
+from app.policies.source_access import AllowedSource, SourceAccessPolicy
+from app.source_registry import SourceRegistry
+
+
+class MutationOperation(str, Enum):
+    CREATE = "create"
+    UPDATE = "update"
+    MOVE = "move"
+    DELETE = "delete"
+    SHARE = "share"
+
+
+class ContentMutationPolicy:
+    APPROVAL_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{2,127}$")
+    RESOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+    MAX_NAME_LENGTH = 100
+    MAX_CHANGE_LENGTH = 4000
+
+    def __init__(
+        self,
+        registry: SourceRegistry,
+        source_access_policy: SourceAccessPolicy,
+    ) -> None:
+        self._registry = registry
+        self._source_access_policy = source_access_policy
+
+    def authorize(
+        self,
+        *,
+        source_id: str,
+        operation: MutationOperation,
+        approval_reference: str,
+    ) -> AllowedSource:
+        if self.normalized_approval_reference(approval_reference) is None:
+            raise WorkspaceAdapterError(
+                "mutation_approval_required",
+                "A valid external approval reference is required for mutations.",
+                403,
+            )
+        try:
+            source = self._registry.get(source_id)
+        except KeyError as error:
+            raise WorkspaceAdapterError(
+                "source_not_found",
+                "The requested knowledge source is not registered.",
+                404,
+            ) from error
+        allowed_source = self._source_access_policy.authorize_source(
+            source,
+            require_read=False,
+        )
+        if not getattr(source.capabilities, operation.value):
+            raise WorkspaceAdapterError(
+                "source_capability_denied",
+                "The selected source does not allow the requested mutation.",
+                403,
+            )
+        return allowed_source
+
+    @classmethod
+    def normalized_approval_reference(cls, value: str) -> str | None:
+        candidate = value.strip()
+        if cls.APPROVAL_REFERENCE_PATTERN.fullmatch(candidate):
+            return candidate
+        return None
+
+    @classmethod
+    def validate_name(cls, name: str) -> str:
+        candidate = name.strip()
+        if not candidate or len(candidate) > cls.MAX_NAME_LENGTH:
+            raise WorkspaceAdapterError(
+                "mutation_input_invalid",
+                "Artifact name must contain between 1 and 100 characters.",
+                422,
+            )
+        return candidate
+
+    @classmethod
+    def validate_change(cls, change: str) -> str:
+        if not change.strip() or len(change) > cls.MAX_CHANGE_LENGTH:
+            raise WorkspaceAdapterError(
+                "mutation_input_invalid",
+                "Document change must contain between 1 and 4000 characters.",
+                422,
+            )
+        return change
+
+    @classmethod
+    def validate_resource_id(cls, resource_id: str) -> str:
+        if not cls.RESOURCE_ID_PATTERN.fullmatch(resource_id):
+            raise WorkspaceAdapterError(
+                "mutation_input_invalid",
+                "Workspace resource ID has an invalid format.",
+                422,
+            )
+        return resource_id

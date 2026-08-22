@@ -9,6 +9,7 @@ from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.config.settings import Settings, get_settings
 from app.policies.source_access import SourceAccessPolicy
+from app.policies.content_mutation import ContentMutationPolicy
 from app.source_discovery.google_workspace import GoogleWorkspaceSourceDiscovery
 from app.source_discovery.interface import SourceDiscovery
 from app.source_proposal_store import (
@@ -29,6 +30,7 @@ class KnowledgeRuntime:
     sheets_adapter: GoogleSheetsAdapter
     source_discovery: SourceDiscovery
     proposal_store: SourceProposalStore
+    mutation_policy: ContentMutationPolicy
 
 
 @lru_cache
@@ -37,10 +39,11 @@ def get_runtime_gateway() -> KnowledgeRuntime:
         settings = get_settings()
         registry = SourceRegistry.load(settings.workspace_source_registry_path)
         workspace_adapter = GoogleWorkspaceAdapter(settings)
+        source_policy = SourceAccessPolicy(settings, registry)
         return KnowledgeRuntime(
             settings=settings,
             registry=registry,
-            source_policy=SourceAccessPolicy(settings, registry),
+            source_policy=source_policy,
             workspace_adapter=workspace_adapter,
             docs_adapter=GoogleDocsAdapter(settings),
             sheets_adapter=GoogleSheetsAdapter(settings),
@@ -55,6 +58,7 @@ def get_runtime_gateway() -> KnowledgeRuntime:
                     object_name=settings.source_proposal_object,
                 )
             ),
+            mutation_policy=ContentMutationPolicy(registry, source_policy),
         )
     except ValueError as error:
         raise WorkspaceAdapterError(

@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.12:
+Arquitectura v0.13:
 
 Agents
 ↓
@@ -42,9 +42,10 @@ Source Discovery → Source Proposal Store (YAML versionado en Cloud Storage)
 
 El adapter usa Application Default Credentials de Cloud Run y firma remota con
 IAM Credentials para crear credenciales delegadas, sin archivos de claves ni
-secretos. Aunque los scopes OAuth coinciden con la configuración DWD existente,
-la integración actual expone exclusivamente operaciones de solo lectura y la
-capa de políticas no permite mutaciones.
+secretos. Los scopes OAuth coinciden con la configuración DWD existente. Las
+lecturas siguen gobernadas por sus políticas actuales y las únicas mutaciones
+expuestas son operaciones semánticas, source-scoped y autorizadas mediante
+capabilities.
 
 Variables no secretas requeridas:
 
@@ -102,8 +103,9 @@ Endpoints:
   está deprecado.
 
 La lectura de metadata pasa por `DriveReadPolicy`; la lectura de contenido pasa
-por `ContentReadPolicy`. No existen endpoints de escritura, edición, creación,
-movimiento, borrado, permisos o compartición.
+por `ContentReadPolicy`. Las mutaciones no se exponen como endpoints REST ni
+como APIs crudas de Google: solo existen como tools MCP gobernados. No existen
+operaciones de borrado, permisos, ownership, publicación o compartición.
 
 ## Source Registry y clasificación
 
@@ -119,6 +121,8 @@ versión 1 requiere estos campos para cada entrada:
   `client_shareable` o `public`;
 - `owner`: lista no vacía de responsables;
 - `status`: `active` o `disabled`.
+- `capabilities`: matriz explícita `read`, `create`, `update`, `move`, `delete`
+  y `share`. Las mutaciones son `false` por defecto.
 
 Para registrar una fuente nueva, se agrega una entrada completa con un `id` y
 un `location_id` únicos, se elige una de las cuatro clasificaciones y se valida
@@ -145,7 +149,8 @@ forma humana y versionada; Google Workspace nunca modifica `sources.yaml`.
 
 `ClassificationPolicy` convierte una fuente activa en contexto semántico.
 `SourceAccessPolicy` usa el registro para autorizar la ubicación antes de que el
-adapter lea contenido. Una fuente `disabled` se rechaza. La clasificación aporta
+adapter lea contenido. La lectura también requiere `capabilities.read`. Una
+fuente `disabled` se rechaza. La clasificación aporta
 contexto de gobierno: no concede acceso a clientes, no publica, no comparte y no
 implementa RBAC.
 
@@ -252,6 +257,32 @@ gcloud storage buckets add-iam-policy-binding gs://<bucket-dedicado> \
 El objeto puede iniciar con `version: 1` y `proposals: []`. No contiene secretos
 ni modifica el Source Registry.
 
+## Governed Source Operations
+
+`ContentMutationPolicy` es independiente de las políticas de lectura. Una
+mutación requiere simultáneamente:
+
+- `source_id` presente en el Source Registry versionado;
+- fuente activa y no bloqueada;
+- capability exacta habilitada (`create`, `update` o `move`);
+- `approval_reference` externa, con formato seguro;
+- pertenencia source-scoped del artefacto y, para move, del destino.
+
+La presencia en `sources.yaml` representa la aprobación de la fuente. El
+Gateway no interpreta ni aprueba la referencia de decisión: solo exige su
+presencia y la conserva en auditoría.
+
+Las operaciones soportadas están deliberadamente acotadas:
+
+- crear un Google Doc nativo vacío en la raíz de la fuente;
+- anexar hasta 4,000 caracteres a un Google Doc perteneciente a la fuente;
+- mover un Google Doc entre carpetas pertenecientes a la misma fuente.
+
+No hay update arbitrario de Drive, reemplazo completo de documentos, escritura
+de Sheets, movimiento entre fuentes, delete, share, ownership ni modificación
+automática del Source Registry. El contenido enviado en `change` nunca se
+registra en auditoría.
+
 ## MCP
 
 El endpoint Streamable HTTP está montado en `/mcp` con MCP Python SDK 2.x,
@@ -270,6 +301,12 @@ Tools disponibles:
   sin aprobar ni aplicar cambios;
 - `list_source_proposals`: lista resúmenes seguros del registro durable;
 - `get_source_proposal`: devuelve el detalle seguro de una propuesta pendiente;
+- `create_source_artifact`: crea únicamente un Google Doc nativo en una fuente
+  con capability `create` y aprobación externa;
+- `update_source_artifact`: anexa texto acotado a un Doc source-scoped con
+  capability `update`;
+- `move_source_artifact`: mueve un Doc únicamente dentro de la misma fuente con
+  capability `move`;
 - `list_source_documents`: documentos autorizados de una fuente, con filtro
   opcional por nombre;
 - `retrieve_document`: lectura source-scoped de Google Docs;
@@ -278,9 +315,9 @@ Tools disponibles:
 Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
-propagan como tool errors legibles. Ningún tool escribe en Google Workspace ni
-modifica el Source Registry; las tres herramientas de proposals solo persisten
-o consultan intenciones pendientes.
+propagan como tool errors legibles. Solo los tres tools de mutación anteriores
+escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
+herramientas de proposals solo persisten o consultan intenciones pendientes.
 
 ## Autenticación del Gateway
 

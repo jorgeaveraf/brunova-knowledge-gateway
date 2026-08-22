@@ -80,3 +80,41 @@ def test_docs_adapter_returns_metadata_and_truncated_nested_text():
     documents.get.assert_called_once_with(
         documentId="document_12345", includeTabsContent=True
     )
+
+
+def test_docs_adapter_applies_only_append_text_batch_update():
+    update_request = Mock()
+    documents = Mock()
+    documents.batchUpdate.return_value = update_request
+    docs = Mock()
+    docs.documents.return_value = documents
+    adapter = GoogleDocsAdapter(
+        settings(),
+        credentials_factory=Mock(return_value=object()),
+        service_builder=Mock(return_value=docs),
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Plan",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+    )
+
+    adapter.append_text(resource, text="Approved addition.")
+
+    documents.batchUpdate.assert_called_once_with(
+        documentId="document_12345",
+        body={
+            "requests": [
+                {
+                    "insertText": {
+                        "endOfSegmentLocation": {},
+                        "text": "Approved addition.",
+                    }
+                }
+            ]
+        },
+    )
+    update_request.execute.assert_called_once_with()

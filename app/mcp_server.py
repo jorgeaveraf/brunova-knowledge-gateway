@@ -3,6 +3,7 @@
 import os
 from collections.abc import Callable
 from typing import TypeVar
+from typing import Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
@@ -14,19 +15,24 @@ from app.adapters.google_workspace.models import (
     DriveFile,
     GoogleDocContent,
     SheetRangeContent,
+    SourceArtifactMutationResult,
 )
 from app.audit import correlation_id, emit_audit_record
+from app.policies.content_mutation import ContentMutationPolicy
 from app.knowledge import (
     discover_candidate_sources,
+    create_authorized_source_artifact,
     get_candidate_details,
     list_authorized_source_files,
     list_registered_sources,
     list_registered_source_proposals,
+    move_authorized_source_artifact,
     registered_source,
     registered_source_proposal,
     register_source_proposal,
     retrieve_authorized_document,
     retrieve_authorized_sheet_range,
+    update_authorized_source_artifact,
 )
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
 from app.source_discovery.interface import CandidateDetailsResponse, DiscoveryResponse
@@ -73,13 +79,17 @@ class SourceProposalDetailsToolResult(BaseModel):
     request_id: str
 
 
+class SourceMutationToolResult(SourceArtifactMutationResult):
+    request_id: str
+
+
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.12.0",
+    version="0.13.0",
     instructions=(
-        "Read authorized Brunova knowledge and create pending source governance "
-        "intents. No tool approves sources, mutates Source Registry, or writes to "
-        "external systems."
+        "Read authorized Brunova knowledge, manage pending source proposals, and "
+        "execute capability-gated Google Workspace mutations with an external "
+        "approval reference. No tool approves sources or mutates Source Registry."
     ),
 )
 
@@ -98,6 +108,8 @@ def _execute_tool(
     resource_type: str | None = None,
     candidate_count: Callable[[T], int] | None = None,
     proposal_id: Callable[[T], str] | None = None,
+    result_resource_id: Callable[[T], str] | None = None,
+    approval_reference: str | None = None,
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
@@ -110,7 +122,9 @@ def _execute_tool(
         emit_audit_record(
             request_id=request_id,
             action=action,
-            resource_id=resource_id,
+            resource_id=(
+                result_resource_id(result) if result_resource_id else resource_id
+            ),
             resource_type=resource_type,
             result="success",
             http_status=200,
@@ -118,6 +132,7 @@ def _execute_tool(
             source_classification=source_classification,
             candidate_count=(candidate_count(result) if candidate_count else None),
             proposal_id=(proposal_id(result) if proposal_id else None),
+            approval_reference=approval_reference,
         )
         return result
     except WorkspaceAdapterError as error:
@@ -131,6 +146,7 @@ def _execute_tool(
             error_code=error.code,
             source_id=source_id,
             source_classification=source_classification,
+            approval_reference=approval_reference,
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
     except Exception:
@@ -144,6 +160,7 @@ def _execute_tool(
             error_code="unhandled_error",
             source_id=source_id,
             source_classification=source_classification,
+            approval_reference=approval_reference,
         )
         raise
 
@@ -299,6 +316,108 @@ def get_source_proposal(
         resource_id=proposal_id,
         resource_type="source_proposal",
         proposal_id=lambda result: result.proposal.proposal_id,
+    )
+
+
+@mcp_server.tool()
+def create_source_artifact(
+    source_id: str,
+    name: str,
+    type: Literal["document"],
+    ctx: Context,
+    approval_reference: str = "",
+) -> SourceMutationToolResult:
+    """Create one native Google Doc at an approved, create-enabled source root."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="create_source_artifact",
+        operation=lambda runtime, request_id: SourceMutationToolResult(
+            **create_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                source_id=source_id,
+                name=name,
+                artifact_type=type,
+                approval_reference=approval_reference,
+            ).model_dump(exclude={"request_id"}),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_type="google_document",
+        result_resource_id=lambda result: result.artifact.id,
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+    )
+
+
+@mcp_server.tool()
+def update_source_artifact(
+    source_id: str,
+    document_id: str,
+    change: str,
+    ctx: Context,
+    approval_reference: str = "",
+) -> SourceMutationToolResult:
+    """Append bounded text to an authorized native Google Doc."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="update_source_artifact",
+        operation=lambda runtime, request_id: SourceMutationToolResult(
+            **update_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                source_id=source_id,
+                document_id=document_id,
+                change=change,
+                approval_reference=approval_reference,
+            ).model_dump(exclude={"request_id"}),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=document_id,
+        resource_type="google_document",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+    )
+
+
+@mcp_server.tool()
+def move_source_artifact(
+    source_id: str,
+    artifact_id: str,
+    destination_folder_id: str,
+    ctx: Context,
+    approval_reference: str = "",
+) -> SourceMutationToolResult:
+    """Move an authorized Google Doc to a folder within the same source."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="move_source_artifact",
+        operation=lambda runtime, request_id: SourceMutationToolResult(
+            **move_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                source_id=source_id,
+                artifact_id=artifact_id,
+                destination_folder_id=destination_folder_id,
+                approval_reference=approval_reference,
+            ).model_dump(exclude={"request_id"}),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_id,
+        resource_type="google_document",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
     )
 
 

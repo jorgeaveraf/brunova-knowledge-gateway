@@ -35,6 +35,7 @@ class SourceAccessPolicy:
         for source in self._registry.sources:
             if (
                 source.status == SourceStatus.ACTIVE
+                and source.capabilities.read
                 and source.location_id not in self._blocked
             ):
                 allowed.append(
@@ -62,7 +63,12 @@ class SourceAccessPolicy:
             ),
         )
 
-    def authorize_source(self, source: SourceDefinition) -> AllowedSource:
+    def authorize_source(
+        self,
+        source: SourceDefinition,
+        *,
+        require_read: bool = True,
+    ) -> AllowedSource:
         """Authorize registry metadata before it is passed to an adapter."""
 
         try:
@@ -71,6 +77,12 @@ class SourceAccessPolicy:
             raise self._not_allowed() from error
         if registered_source != source or source.location_id in self._blocked:
             raise self._not_allowed()
+        if require_read and not source.capabilities.read:
+            raise WorkspaceAdapterError(
+                "source_capability_denied",
+                "The selected source does not allow read access.",
+                403,
+            )
         return AllowedSource(
             definition=source,
             context=ClassificationPolicy.apply(source),

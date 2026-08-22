@@ -66,3 +66,14 @@ def test_undefined_classification_is_rejected(tmp_path):
         SourceRegistry.load(
             str(write_registry(tmp_path, classification="confidential"))
         )
+
+
+def test_capability_matrix_defaults_fail_closed_for_mutations(tmp_path):
+    source = SourceRegistry.load(str(write_registry(tmp_path))).get("career_ops")
+
+    assert source.capabilities.read is True
+    assert source.capabilities.create is False
+    assert source.capabilities.update is False
+    assert source.capabilities.move is False
+    assert source.capabilities.delete is False
+    assert source.capabilities.share is False

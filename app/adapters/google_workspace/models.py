@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -73,6 +73,19 @@ class SheetRangeContent(BaseModel):
     source: Optional[SourceMetadata] = None
 
 
+class SourceArtifact(BaseModel):
+    id: str
+    name: str
+    type: Literal["document"]
+
+
+class SourceArtifactMutationResult(BaseModel):
+    artifact: SourceArtifact
+    source: SourceMetadata
+    status: Literal["created", "updated", "moved"]
+    request_id: Optional[str] = None
+
+
 @dataclass(frozen=True)
 class WorkspaceResource:
     id: str
@@ -81,3 +94,4 @@ class WorkspaceResource:
     modified_time: str
     drive_id: Optional[str]
     ancestor_ids: tuple[str, ...]
+    parent_ids: tuple[str, ...] = ()

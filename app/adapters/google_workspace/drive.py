@@ -28,10 +28,12 @@ MIME_TYPES = {
     "application/vnd.google-apps.presentation": "presentation",
     "application/vnd.google-apps.folder": "folder",
 }
+GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
+GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
 
 class GoogleWorkspaceAdapter:
-    """Google Workspace read adapter using delegated runtime credentials."""
+    """Governed Google Workspace adapter using delegated runtime credentials."""
 
     def __init__(
         self,
@@ -183,6 +185,88 @@ class GoogleWorkspaceAdapter:
                 modified_time=metadata.get("modifiedTime", ""),
                 drive_id=metadata.get("driveId"),
                 ancestor_ids=tuple(ancestors),
+                parent_ids=tuple(metadata.get("parents", [])),
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def create_document(self, *, source: AllowedSource, name: str) -> WorkspaceResource:
+        """Create only a native Google Doc at the approved source root."""
+
+        try:
+            metadata = (
+                self._drive()
+                .files()
+                .create(
+                    body={
+                        "name": name,
+                        "mimeType": GOOGLE_DOC_MIME_TYPE,
+                        "parents": [source.definition.location_id],
+                    },
+                    fields="id,name,mimeType,modifiedTime,driveId,parents",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", name),
+                mime_type=metadata.get("mimeType", GOOGLE_DOC_MIME_TYPE),
+                modified_time=metadata.get("modifiedTime", ""),
+                drive_id=metadata.get("driveId"),
+                ancestor_ids=(source.definition.location_id,),
+                parent_ids=tuple(metadata.get("parents", [source.definition.location_id])),
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def move_resource(
+        self,
+        *,
+        resource: WorkspaceResource,
+        destination: WorkspaceResource,
+    ) -> WorkspaceResource:
+        """Move an artifact to a pre-authorized folder; policy resolves scope."""
+
+        if destination.mime_type != GOOGLE_FOLDER_MIME_TYPE:
+            raise WorkspaceAdapterError(
+                "mutation_destination_invalid",
+                "The move destination must be a Google Drive folder.",
+                422,
+            )
+        if destination.id in resource.parent_ids:
+            raise WorkspaceAdapterError(
+                "mutation_destination_invalid",
+                "The artifact is already in the requested destination.",
+                422,
+            )
+        if not resource.parent_ids:
+            raise WorkspaceAdapterError(
+                "mutation_destination_invalid",
+                "The artifact does not have a movable parent.",
+                422,
+            )
+        try:
+            metadata = (
+                self._drive()
+                .files()
+                .update(
+                    fileId=resource.id,
+                    addParents=destination.id,
+                    removeParents=",".join(resource.parent_ids),
+                    fields="id,name,mimeType,modifiedTime,driveId,parents",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", resource.name),
+                mime_type=metadata.get("mimeType", resource.mime_type),
+                modified_time=metadata.get("modifiedTime", ""),
+                drive_id=metadata.get("driveId", resource.drive_id),
+                ancestor_ids=(destination.id, *destination.ancestor_ids),
+                parent_ids=tuple(metadata.get("parents", [destination.id])),
             )
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error

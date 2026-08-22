@@ -74,7 +74,7 @@ def map_google_error(error: Exception) -> WorkspaceAdapterError:
         if status in (401, 403):
             return WorkspaceAdapterError(
                 "insufficient_permissions",
-                "The delegated identity does not have permission to perform this read operation.",
+                "The delegated identity does not have permission to perform this Workspace operation.",
                 403,
             )
         if status == 404:
