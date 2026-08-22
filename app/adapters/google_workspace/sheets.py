@@ -9,8 +9,10 @@ from googleapiclient.errors import HttpError
 
 from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
-from app.adapters.google_workspace.models import SheetRangeContent
+from app.adapters.google_workspace.models import SheetRangeContent, WorkspaceResource
 from app.config.settings import Settings
+
+GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
 
 
 class GoogleSheetsAdapter:
@@ -29,8 +31,16 @@ class GoogleSheetsAdapter:
     def max_cells(self) -> int:
         return self._settings.workspace_sheet_max_cells
 
-    def get_range(self, spreadsheet_id: str, *, range_name: str) -> SheetRangeContent:
+    def get_range(
+        self, resource: WorkspaceResource, *, range_name: str
+    ) -> SheetRangeContent:
         try:
+            if resource.mime_type != GOOGLE_SHEET_MIME_TYPE:
+                raise WorkspaceAdapterError(
+                    "resource_type_invalid",
+                    "The requested resource is not a native Google Sheet.",
+                    422,
+                )
             credentials = self._credentials_factory(self._settings)
             sheets = self._service_builder(
                 "sheets", "v4", credentials=credentials, cache_discovery=False
@@ -38,14 +48,16 @@ class GoogleSheetsAdapter:
             response = (
                 sheets.spreadsheets()
                 .values()
-                .get(spreadsheetId=spreadsheet_id, range=range_name)
+                .get(spreadsheetId=resource.id, range=range_name)
                 .execute()
             )
             return SheetRangeContent(
-                spreadsheet_id=spreadsheet_id,
+                spreadsheet_id=resource.id,
                 range=range_name,
                 values=response.get("values", []),
             )
+        except WorkspaceAdapterError:
+            raise
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
         except OSError as error:

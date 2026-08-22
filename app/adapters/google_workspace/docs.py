@@ -9,7 +9,7 @@ from googleapiclient.errors import HttpError
 
 from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
-from app.adapters.google_workspace.models import GoogleDocContent
+from app.adapters.google_workspace.models import GoogleDocContent, WorkspaceResource
 from app.config.settings import Settings
 
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
@@ -31,24 +31,15 @@ class GoogleDocsAdapter:
     def max_chars(self) -> int:
         return self._settings.workspace_doc_max_chars
 
-    def get_document(self, document_id: str, *, max_chars: int) -> GoogleDocContent:
+    def get_document(
+        self, resource: WorkspaceResource, *, max_chars: int
+    ) -> GoogleDocContent:
         try:
             credentials = self._credentials_factory(self._settings)
-            drive = self._service_builder(
-                "drive", "v3", credentials=credentials, cache_discovery=False
-            )
             docs = self._service_builder(
                 "docs", "v1", credentials=credentials, cache_discovery=False
             )
-            metadata = (
-                drive.files()
-                .get(
-                    fileId=document_id,
-                    fields="id,name,mimeType,modifiedTime",
-                )
-                .execute()
-            )
-            if metadata.get("mimeType") != GOOGLE_DOC_MIME_TYPE:
+            if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
                 raise WorkspaceAdapterError(
                     "resource_type_invalid",
                     "The requested resource is not a native Google Doc.",
@@ -56,15 +47,15 @@ class GoogleDocsAdapter:
                 )
             document = (
                 docs.documents()
-                .get(documentId=document_id, includeTabsContent=True)
+                .get(documentId=resource.id, includeTabsContent=True)
                 .execute()
             )
             text, truncated = _bounded_text(_document_text_chunks(document), max_chars)
             return GoogleDocContent(
-                id=metadata["id"],
-                name=metadata.get("name", ""),
-                mime_type=metadata["mimeType"],
-                modified_time=metadata.get("modifiedTime", ""),
+                id=resource.id,
+                name=resource.name,
+                mime_type=resource.mime_type,
+                modified_time=resource.modified_time,
                 text=text,
                 truncated=truncated,
                 limit=max_chars,

@@ -11,6 +11,11 @@ class Settings:
     workspace_service_account_email: str
     workspace_doc_max_chars: int
     workspace_sheet_max_cells: int
+    workspace_allowed_shared_drive_ids: tuple[str, ...]
+    workspace_allowed_folder_ids: tuple[str, ...]
+    workspace_blocked_source_ids: tuple[str, ...]
+    workspace_source_max_depth: int
+    workspace_audit_enabled: bool
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -18,6 +23,7 @@ class Settings:
         service_account = os.getenv("WORKSPACE_SERVICE_ACCOUNT_EMAIL", "").strip()
         doc_max_chars = os.getenv("WORKSPACE_DOC_MAX_CHARS", "").strip()
         sheet_max_cells = os.getenv("WORKSPACE_SHEET_MAX_CELLS", "").strip()
+        source_max_depth = os.getenv("WORKSPACE_SOURCE_MAX_DEPTH", "").strip()
 
         missing = [
             name
@@ -26,6 +32,7 @@ class Settings:
                 ("WORKSPACE_SERVICE_ACCOUNT_EMAIL", service_account),
                 ("WORKSPACE_DOC_MAX_CHARS", doc_max_chars),
                 ("WORKSPACE_SHEET_MAX_CELLS", sheet_max_cells),
+                ("WORKSPACE_SOURCE_MAX_DEPTH", source_max_depth),
             )
             if not value
         ]
@@ -40,18 +47,48 @@ class Settings:
         try:
             parsed_doc_max_chars = int(doc_max_chars)
             parsed_sheet_max_cells = int(sheet_max_cells)
+            parsed_source_max_depth = int(source_max_depth)
         except ValueError as error:
             raise ValueError("Workspace content limits must be integers") from error
-        if parsed_doc_max_chars < 1 or parsed_sheet_max_cells < 1:
-            raise ValueError("Workspace content limits must be positive")
+        if min(
+            parsed_doc_max_chars,
+            parsed_sheet_max_cells,
+            parsed_source_max_depth,
+        ) < 1:
+            raise ValueError("Workspace limits must be positive")
         return cls(
             delegated_user,
             service_account,
             parsed_doc_max_chars,
             parsed_sheet_max_cells,
+            _csv_ids("WORKSPACE_ALLOWED_SHARED_DRIVE_IDS"),
+            _csv_ids("WORKSPACE_ALLOWED_FOLDER_IDS"),
+            _csv_ids("WORKSPACE_BLOCKED_SOURCE_IDS"),
+            parsed_source_max_depth,
+            _environment_bool("WORKSPACE_AUDIT_ENABLED", default=True),
         )
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings.from_environment()
+
+
+def _csv_ids(name: str) -> tuple[str, ...]:
+    return tuple(
+        value.strip()
+        for value in os.getenv(name, "").split(",")
+        if value.strip()
+    )
+
+
+def _environment_bool(name: str, *, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    value = raw_value.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be true or false")
