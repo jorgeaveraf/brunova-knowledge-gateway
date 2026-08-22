@@ -28,6 +28,7 @@ from app.knowledge import (
     retrieve_authorized_sheet_range,
 )
 from app.mcp_server import mcp_http_app, mcp_server
+from app.middleware.authentication import GatewayAuthenticationMiddleware
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.policies.source_access import SourceAccessPolicy
 from app.source_discovery.google_workspace import GoogleWorkspaceSourceDiscovery
@@ -47,9 +48,10 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.9.0",
+    version="0.10.0",
     lifespan=lifespan,
 )
+app.add_middleware(GatewayAuthenticationMiddleware)
 
 
 def _get_valid_settings() -> Settings:
@@ -225,6 +227,7 @@ def capabilities():
             "source_registry",
             "source_discovery",
             "mcp_read",
+            "gateway_authentication",
         ]
     }
 

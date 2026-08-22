@@ -42,7 +42,7 @@ class DocumentListToolResult(BaseModel):
 
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.9.0",
+    version="0.10.0",
     instructions=(
         "Read authorized Brunova knowledge through semantic sources. "
         "All tools are read-only and policy governed."

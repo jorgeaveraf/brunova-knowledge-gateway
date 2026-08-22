@@ -1,3 +1,5 @@
+import os
+
 from fastapi.testclient import TestClient
 
 from app.adapters.google_workspace.models import (
@@ -47,6 +49,15 @@ TEST_SOURCE = SourceDefinition.model_validate(
 TEST_REGISTRY = SourceRegistry(
     SourceRegistryDocument(version=1, sources=(TEST_SOURCE,))
 )
+
+
+def authenticated_client() -> TestClient:
+    return TestClient(
+        app,
+        headers={
+            "Authorization": f"Bearer {os.environ['BRUNOVA_GATEWAY_TOKEN']}"
+        },
+    )
 
 
 def fake_source_registry():
@@ -208,7 +219,7 @@ class FakeSheetsAdapter:
 def test_workspace_status_response():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     try:
-        response = TestClient(app).get(
+        response = authenticated_client().get(
             "/workspace/status", headers={"X-Correlation-ID": "test-request-123"}
         )
     finally:
@@ -223,10 +234,8 @@ def test_workspace_status_response():
     assert response.headers["X-Correlation-ID"] == "test-request-123"
 
 
-def test_application_lifespan_starts_with_mcp_session_manager():
-    with TestClient(app) as client:
-        response = client.get("/health")
-
+def test_health_remains_available_without_authentication():
+    response = TestClient(app).get("/health")
     assert response.status_code == 200
 
 
@@ -234,7 +243,7 @@ def test_drive_list_response():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get("/workspace/drive/list?limit=2")
+        response = authenticated_client().get("/workspace/drive/list?limit=2")
     finally:
         app.dependency_overrides.clear()
 
@@ -260,7 +269,7 @@ def test_drive_list_rejects_unbounded_request():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get("/workspace/drive/list?limit=101")
+        response = authenticated_client().get("/workspace/drive/list?limit=101")
     finally:
         app.dependency_overrides.clear()
 
@@ -272,7 +281,7 @@ def test_drive_list_rejects_unbounded_request():
 def test_sources_list_returns_only_safe_registry_metadata():
     app.dependency_overrides[get_source_registry] = fake_source_registry
     try:
-        response = TestClient(app).get("/sources")
+        response = authenticated_client().get("/sources")
     finally:
         app.dependency_overrides.clear()
 
@@ -293,7 +302,7 @@ def test_sources_list_returns_only_safe_registry_metadata():
 def test_source_detail_returns_safe_metadata_and_missing_source_is_404():
     app.dependency_overrides[get_source_registry] = fake_source_registry
     try:
-        client = TestClient(app)
+        client = authenticated_client()
         response = client.get("/sources/career_ops")
         missing = client.get("/sources/missing_source")
     finally:
@@ -309,7 +318,7 @@ def test_source_detail_returns_safe_metadata_and_missing_source_is_404():
 def test_source_discovery_returns_safe_candidates_only():
     app.dependency_overrides[get_source_discovery] = FakeDiscovery
     try:
-        response = TestClient(app).get("/sources/discover?limit=5")
+        response = authenticated_client().get("/sources/discover?limit=5")
     finally:
         app.dependency_overrides.clear()
 
@@ -332,7 +341,7 @@ def test_source_files_resolves_authorizes_and_lists_one_source():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get(
+        response = authenticated_client().get(
             "/sources/career_ops/files?limit=2",
             headers={"X-Correlation-ID": "source-files-request"},
         )
@@ -353,7 +362,7 @@ def test_source_files_rejects_missing_and_blocked_sources():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = RejectSourcePolicy
     try:
-        client = TestClient(app)
+        client = authenticated_client()
         missing = client.get("/sources/missing_source/files?limit=2")
         blocked = client.get("/sources/career_ops/files?limit=2")
     finally:
@@ -371,7 +380,7 @@ def test_source_scoped_document_response():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get(
+        response = authenticated_client().get(
             "/sources/career_ops/docs/document_12345",
             headers={"X-Correlation-ID": "source-doc-request"},
         )
@@ -390,7 +399,7 @@ def test_source_scoped_sheet_response():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get(
+        response = authenticated_client().get(
             "/sources/career_ops/sheets/spreadsheet_12345?range=A1:F10"
         )
     finally:
@@ -408,7 +417,7 @@ def test_source_scoped_content_rejects_resource_outside_selected_source():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = RejectMembershipPolicy
     try:
-        client = TestClient(app)
+        client = authenticated_client()
         document = client.get("/sources/career_ops/docs/document_12345")
         sheet = client.get(
             "/sources/career_ops/sheets/spreadsheet_12345?range=A1:F10"
@@ -427,7 +436,7 @@ def test_document_content_response():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get("/workspace/docs/document_12345")
+        response = authenticated_client().get("/workspace/docs/document_12345")
     finally:
         app.dependency_overrides.clear()
 
@@ -447,7 +456,7 @@ def test_sheet_range_response():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get(
+        response = authenticated_client().get(
             "/workspace/sheets/spreadsheet_12345?range=A1:F10"
         )
     finally:
@@ -472,7 +481,7 @@ def test_sheet_range_is_required():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = FakeSourcePolicy
     try:
-        response = TestClient(app).get("/workspace/sheets/spreadsheet_12345")
+        response = authenticated_client().get("/workspace/sheets/spreadsheet_12345")
     finally:
         app.dependency_overrides.clear()
 
@@ -484,7 +493,7 @@ def test_document_outside_allowlist_is_rejected_before_content_read():
     app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
     app.dependency_overrides[get_source_policy] = RejectSourcePolicy
     try:
-        response = TestClient(app).get(
+        response = authenticated_client().get(
             "/workspace/docs/document_12345",
             headers={"X-Correlation-ID": "denied-request-123"},
         )

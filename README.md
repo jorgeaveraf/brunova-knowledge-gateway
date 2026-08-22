@@ -12,11 +12,13 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.9:
+Arquitectura v0.10:
 
 Agents
 ↓
 MCP Server / HTTP API
+↓
+Gateway Authentication
 ↓
 Knowledge Gateway
 ↓
@@ -46,6 +48,10 @@ Variables no secretas requeridas:
 - `WORKSPACE_AUDIT_ENABLED` (`true` o `false`)
 - `MCP_ALLOWED_HOSTS` (hosts exactos permitidos para Streamable HTTP)
 - `MCP_ALLOWED_ORIGINS` (opcional; solo para clientes MCP en navegador)
+
+La variable secreta `BRUNOVA_GATEWAY_TOKEN` también es obligatoria en runtime,
+pero no forma parte de la configuración versionada. Debe inyectarse desde Secret
+Manager como se describe en la sección de autenticación.
 
 La cuenta de runtime necesita `iam.serviceAccounts.signBlob` sobre sí misma
 (normalmente mediante `roles/iam.serviceAccountTokenCreator`). En Google
@@ -181,6 +187,79 @@ Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
 propagan como tool errors legibles. No existen tools de escritura.
+
+## Autenticación del Gateway
+
+Todas las capacidades HTTP y MCP están protegidas por defecto mediante:
+
+```http
+Authorization: Bearer <token administrado fuera del repositorio>
+```
+
+Solo `/health`, `/docs`, `/redoc` y `/openapi.json` permanecen públicos. Esta
+lista es explícita: cualquier endpoint futuro queda protegido automáticamente.
+El middleware autentica al consumidor antes de ejecutar handlers, policies,
+adapters o tools MCP. La comparación del token es constante y el valor nunca se
+registra en auditoría.
+
+La credencial identifica acceso al Knowledge Gateway; no es una credencial de
+Google Workspace. El consumidor no recibe credenciales de Service Account,
+tokens Google, configuración DWD ni scopes OAuth. ADC, impersonation y llamadas
+a Google continúan ocurriendo exclusivamente dentro del Gateway.
+
+Una solicitud sin header obtiene `401` con `missing_authentication`; una
+credencial incorrecta obtiene `401` con `invalid_authentication`. Si el secreto
+no está configurado, el Gateway falla cerrado con `503`. Los eventos de
+autenticación incluyen resultado, tipo de consumidor y correlation ID, pero no
+headers ni credenciales.
+
+### Inyección con Secret Manager
+
+Crear el secreto y agregar su valor mediante entrada segura, sin colocarlo en
+el comando ni en archivos locales:
+
+```bash
+gcloud secrets create brunova-gateway-token \
+  --project=brunova-ai-platform \
+  --replication-policy=automatic
+
+gcloud secrets versions add brunova-gateway-token \
+  --project=brunova-ai-platform \
+  --data-file=-
+```
+
+Después, asociarlo directamente con Cloud Run:
+
+```bash
+gcloud run services update brunova-knowledge-gateway \
+  --project=brunova-ai-platform \
+  --region=us-central1 \
+  --update-secrets=BRUNOVA_GATEWAY_TOKEN=brunova-gateway-token:latest
+```
+
+La identidad de runtime debe tener `roles/secretmanager.secretAccessor` sobre
+ese secreto. La rotación se realiza agregando una nueva versión y desplegando
+una revisión nueva; el valor no pasa por Git ni por la imagen Docker.
+
+### Configuración de un cliente MCP
+
+El cliente apunta al endpoint Streamable HTTP y obtiene el token desde su propio
+secret store o environment seguro:
+
+```json
+{
+  "url": "https://<gateway-host>/mcp/",
+  "headers": {
+    "Authorization": "Bearer ${BRUNOVA_GATEWAY_TOKEN}"
+  }
+}
+```
+
+`BRUNOVA_GATEWAY_TOKEN` no debe guardarse en el repositorio, archivos de
+configuración versionados, código del agente ni logs. Cloud Run puede permitir
+la invocación a nivel de infraestructura porque la aplicación aplica esta capa
+de autenticación antes de toda capacidad; esto evita requerir una identidad GCP
+independiente para cada consumidor.
 
 El SDK MCP 2.x requiere Python 3.10 o posterior. La imagen de Cloud Run usa
 Python 3.12.
