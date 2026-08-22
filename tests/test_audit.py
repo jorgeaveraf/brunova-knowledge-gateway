@@ -2,7 +2,12 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from app.audit import correlation_id, emit_audit_event, request_audit_context
+from app.audit import (
+    correlation_id,
+    emit_audit_event,
+    emit_audit_record,
+    request_audit_context,
+)
 
 
 def test_valid_correlation_id_is_preserved_and_invalid_one_is_replaced():
@@ -120,3 +125,25 @@ def test_discovery_audit_contains_count_without_candidate_details(monkeypatch):
     assert event["candidate_count"] == 3
     assert "candidates" not in event
     assert "location_id" not in event
+
+
+def test_proposal_audit_contains_receipt_without_review_reason(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+
+    emit_audit_record(
+        request_id="proposal-request-123",
+        action="create_source_proposal",
+        resource_id="candidate_00000000000000000000000000000000",
+        resource_type="source_proposal",
+        result="success",
+        http_status=200,
+        proposal_id="proposal_00000000000000000000000000000000",
+    )
+
+    event = json.loads(log_info.call_args.args[0])
+    assert event["proposal_id"] == "proposal_00000000000000000000000000000000"
+    assert "reason" not in event
+    assert "permissions" not in event
+    assert "content" not in event

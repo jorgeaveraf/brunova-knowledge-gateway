@@ -12,8 +12,24 @@ from app.adapters.google_workspace.models import (
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.policies.source_access import SourceAccessPolicy
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
-from app.source_discovery.interface import DiscoveryResult, SourceDiscovery
-from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryMetadata
+from app.source_discovery.interface import (
+    CandidateDetailsResponse,
+    DiscoveryResult,
+    SourceDiscovery,
+)
+from app.source_governance import (
+    SourceProposal,
+    candidate_details,
+    create_source_proposal as build_source_proposal,
+)
+from app.source_registry import (
+    Classification,
+    SourceDefinition,
+    SourceRegistry,
+    SourceRegistryMetadata,
+)
+
+SOURCE_CANDIDATE_LOOKUP_LIMIT = 100
 
 
 def registered_source(registry: SourceRegistry, source_id: str) -> SourceDefinition:
@@ -42,6 +58,43 @@ def discover_candidate_sources(
 
     safe_limit = DriveReadPolicy.validate_list_limit(limit)
     return source_discovery.discover(limit=safe_limit)
+
+
+def get_candidate_details(
+    *,
+    source_discovery: SourceDiscovery,
+    candidate_id: str,
+) -> CandidateDetailsResponse:
+    result = discover_candidate_sources(
+        source_discovery=source_discovery,
+        limit=SOURCE_CANDIDATE_LOOKUP_LIMIT,
+    )
+    return candidate_details(result, candidate_id)
+
+
+def register_source_proposal(
+    *,
+    source_discovery: SourceDiscovery,
+    candidate_id: str,
+    name: str,
+    classification: Classification,
+    reason: str,
+    request_id: str,
+) -> SourceProposal:
+    """Create an auditable pending intent without touching Source Registry."""
+
+    result = discover_candidate_sources(
+        source_discovery=source_discovery,
+        limit=SOURCE_CANDIDATE_LOOKUP_LIMIT,
+    )
+    return build_source_proposal(
+        result=result,
+        candidate_id=candidate_id,
+        name=name,
+        classification=classification,
+        reason=reason,
+        request_id=request_id,
+    )
 
 
 def list_authorized_source_files(

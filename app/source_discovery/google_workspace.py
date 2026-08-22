@@ -4,8 +4,9 @@ import re
 
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.source_discovery.interface import (
+    candidate_confidence,
     DiscoveryResult,
-    SourceProposal,
+    SourceProposalSuggestion,
 )
 from app.source_registry import SourceRegistry
 
@@ -34,13 +35,11 @@ class GoogleWorkspaceSourceDiscovery:
             )
         )
         proposals = tuple(
-            SourceProposal(
+            SourceProposalSuggestion(
                 candidate=candidate,
                 proposed_id=_proposed_id(candidate.name),
                 suggested_classification=candidate.classification_suggestion,
-                confidence=(
-                    "medium" if candidate.location_type == "shared_drive" else "low"
-                ),
+                confidence=candidate_confidence(candidate),
                 reasons=candidate.reasons,
             )
             for candidate in candidates

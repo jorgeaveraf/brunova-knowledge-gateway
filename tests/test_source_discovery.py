@@ -1,7 +1,8 @@
+from dataclasses import replace
 from unittest.mock import Mock
 
 from app.source_discovery.google_workspace import GoogleWorkspaceSourceDiscovery
-from app.source_discovery.interface import CandidateSource
+from app.source_discovery.interface import CandidateSource, candidate_identifier
 from app.source_registry import (
     Classification,
     SourceDefinition,
@@ -54,6 +55,13 @@ def test_discovery_proposes_candidates_without_mutating_registry():
     )
     assert result.proposals[0].confidence == "medium"
     assert result.proposals[0].reasons == ("new shared drive detected",)
+    opaque_id = candidate_identifier(candidate)
+    assert opaque_id.startswith("candidate_")
+    assert candidate.location_id not in opaque_id
+    assert opaque_id == candidate_identifier(replace(candidate, name="Finance Team"))
+    assert opaque_id != candidate_identifier(
+        replace(candidate, location_id="another_drive_123")
+    )
     assert source_registry.sources == before
     adapter.discover_source_candidates.assert_called_once_with(
         excluded_location_ids=frozenset(

@@ -18,15 +18,18 @@ from app.adapters.google_workspace.models import (
 from app.audit import correlation_id, emit_audit_record
 from app.knowledge import (
     discover_candidate_sources,
+    get_candidate_details,
     list_authorized_source_files,
     list_registered_sources,
     registered_source,
+    register_source_proposal,
     retrieve_authorized_document,
     retrieve_authorized_sheet_range,
 )
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
-from app.source_registry import SourceRegistryMetadata
-from app.source_discovery.interface import DiscoveryResponse
+from app.source_discovery.interface import CandidateDetailsResponse, DiscoveryResponse
+from app.source_governance import SourceProposalReceipt
+from app.source_registry import Classification, SourceRegistryMetadata
 
 T = TypeVar("T")
 MCP_DOCUMENT_RESULT_LIMIT = 20
@@ -46,12 +49,21 @@ class SourceDiscoveryToolResult(DiscoveryResponse):
     request_id: str
 
 
+class CandidateDetailsToolResult(CandidateDetailsResponse):
+    request_id: str
+
+
+class SourceProposalToolResult(SourceProposalReceipt):
+    request_id: str
+
+
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.10.1",
+    version="0.11.0",
     instructions=(
-        "Read authorized Brunova knowledge through semantic sources. "
-        "All tools are read-only and policy governed."
+        "Read authorized Brunova knowledge and create pending source governance "
+        "intents. No tool approves sources, mutates Source Registry, or writes to "
+        "external systems."
     ),
 )
 
@@ -69,6 +81,7 @@ def _execute_tool(
     resource_id: str | None = None,
     resource_type: str | None = None,
     candidate_count: Callable[[T], int] | None = None,
+    proposal_id: Callable[[T], str] | None = None,
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
@@ -88,6 +101,7 @@ def _execute_tool(
             source_id=source_id,
             source_classification=source_classification,
             candidate_count=(candidate_count(result) if candidate_count else None),
+            proposal_id=(proposal_id(result) if proposal_id else None),
         )
         return result
     except WorkspaceAdapterError as error:
@@ -160,6 +174,73 @@ def discover_source_candidates(
         operation=operation,
         resource_type="source_discovery",
         candidate_count=lambda result: len(result.candidates),
+    )
+
+
+@mcp_server.tool()
+def get_source_candidate_details(
+    candidate_id: str,
+    ctx: Context,
+) -> CandidateDetailsToolResult:
+    """Inspect safe details for one currently discoverable source candidate."""
+
+    def operation(
+        runtime: KnowledgeRuntime,
+        request_id: str,
+    ) -> CandidateDetailsToolResult:
+        response = get_candidate_details(
+            source_discovery=runtime.source_discovery,
+            candidate_id=candidate_id,
+        )
+        return CandidateDetailsToolResult(
+            **response.model_dump(),
+            request_id=request_id,
+        )
+
+    return _execute_tool(
+        ctx=ctx,
+        action="get_source_candidate_details",
+        operation=operation,
+        resource_id=candidate_id,
+        resource_type="source_candidate",
+    )
+
+
+@mcp_server.tool()
+def create_source_proposal(
+    candidate_id: str,
+    name: str,
+    classification: Classification,
+    reason: str,
+    ctx: Context,
+) -> SourceProposalToolResult:
+    """Register a pending intent for human review without applying any change."""
+
+    def operation(
+        runtime: KnowledgeRuntime,
+        request_id: str,
+    ) -> SourceProposalToolResult:
+        proposal = register_source_proposal(
+            source_discovery=runtime.source_discovery,
+            candidate_id=candidate_id,
+            name=name,
+            classification=classification,
+            reason=reason,
+            request_id=request_id,
+        )
+        receipt = SourceProposalReceipt.from_proposal(proposal)
+        return SourceProposalToolResult(
+            **receipt.model_dump(),
+            request_id=request_id,
+        )
+
+    return _execute_tool(
+        ctx=ctx,
+        action="create_source_proposal",
+        operation=operation,
+        resource_id=candidate_id,
+        resource_type="source_proposal",
+        proposal_id=lambda result: result.proposal_id,
     )
 
 

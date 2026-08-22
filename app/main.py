@@ -48,7 +48,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.10.1",
+    version="0.11.0",
     lifespan=lifespan,
 )
 app.add_middleware(GatewayAuthenticationMiddleware)
@@ -226,6 +226,7 @@ def capabilities():
             "google_workspace",
             "source_registry",
             "source_discovery",
+            "source_governance",
             "mcp_read",
             "gateway_authentication",
         ]

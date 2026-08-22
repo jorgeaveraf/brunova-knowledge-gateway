@@ -18,7 +18,8 @@ from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistry
 from app.source_discovery.interface import (
     CandidateSource,
     DiscoveryResult,
-    SourceProposal,
+    SourceProposalSuggestion,
+    candidate_identifier,
 )
 
 mcp_module = importlib.import_module("app.mcp_server")
@@ -133,7 +134,7 @@ class FakeDiscovery:
         self.source_registry = source_registry
 
     def discover(self, *, limit=25):
-        assert limit == 10
+        assert limit in (10, 100)
         before = self.source_registry.sources
         candidate = CandidateSource(
             system="google_workspace",
@@ -146,7 +147,7 @@ class FakeDiscovery:
         result = DiscoveryResult(
             candidates=(candidate,),
             proposals=(
-                SourceProposal(
+                SourceProposalSuggestion(
                     candidate=candidate,
                     proposed_id="finance",
                     suggested_classification="management_only",
@@ -177,7 +178,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_five_governed_read_tools(monkeypatch):
+def test_mcp_exposes_only_the_seven_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -192,6 +193,8 @@ def test_mcp_exposes_only_the_five_governed_read_tools(monkeypatch):
         "retrieve_document",
         "retrieve_sheet_range",
         "discover_source_candidates",
+        "get_source_candidate_details",
+        "create_source_proposal",
     }
 
 
@@ -210,7 +213,18 @@ def test_mcp_discovers_safe_source_proposals_and_audits_count(monkeypatch):
     result = run(scenario())
 
     assert result.is_error is False
+    candidate_id = candidate_identifier(
+        CandidateSource(
+            system="google_workspace",
+            location_type="shared_drive",
+            location_id="finance_drive_123",
+            name="Finance",
+            classification_suggestion="management_only",
+            reasons=("new shared drive detected",),
+        )
+    )
     assert result.structured_content["candidates"][0] == {
+        "candidate_id": candidate_id,
         "name": "Finance",
         "location_type": "shared_drive",
         "classification_suggestion": "management_only",
@@ -222,6 +236,77 @@ def test_mcp_discovers_safe_source_proposals_and_audits_count(monkeypatch):
     assert "proposed_id" not in repr(result.structured_content)
     assert audit.call_args.kwargs["action"] == "discover_source_candidates"
     assert audit.call_args.kwargs["candidate_count"] == 1
+
+
+def test_mcp_candidate_details_and_proposal_creation_are_governed(monkeypatch):
+    gateway_runtime = runtime()
+    before = gateway_runtime.registry.sources
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+    candidate_id = candidate_identifier(
+        CandidateSource(
+            system="google_workspace",
+            location_type="shared_drive",
+            location_id="finance_drive_123",
+            name="Finance",
+            classification_suggestion="management_only",
+            reasons=("new shared drive detected",),
+        )
+    )
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            details = await client.call_tool(
+                "get_source_candidate_details",
+                {"candidate_id": candidate_id},
+            )
+            proposal = await client.call_tool(
+                "create_source_proposal",
+                {
+                    "candidate_id": candidate_id,
+                    "name": "Finance",
+                    "classification": "management_only",
+                    "reason": "Reviewed; awaiting explicit human approval.",
+                },
+            )
+            return details, proposal
+
+    details, proposal = run(scenario())
+
+    assert details.is_error is False
+    assert details.structured_content["candidate"]["candidate_id"] == candidate_id
+    assert details.structured_content["candidate"]["confidence"] == "medium"
+    assert "location_id" not in repr(details.structured_content)
+    assert proposal.is_error is False
+    assert proposal.structured_content["status"] == "pending_review"
+    assert proposal.structured_content["proposal_id"].startswith("proposal_")
+    assert gateway_runtime.registry.sources == before
+    actions = [call.kwargs["action"] for call in audit.call_args_list]
+    assert actions == ["get_source_candidate_details", "create_source_proposal"]
+    assert audit.call_args.kwargs["proposal_id"] == (
+        proposal.structured_content["proposal_id"]
+    )
+    assert "reason" not in audit.call_args.kwargs
+
+
+def test_mcp_candidate_details_reject_unknown_candidate(monkeypatch):
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "get_source_candidate_details",
+                {"candidate_id": "candidate_00000000000000000000000000000000"},
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is True
+    assert "source_candidate_not_found" in result.content[0].text
+    assert audit.call_args.kwargs["error_code"] == "source_candidate_not_found"
 
 
 def test_mcp_lists_sources_and_filters_authorized_documents(monkeypatch):

@@ -21,7 +21,8 @@ from app.source_registry import (
 from app.source_discovery.interface import (
     CandidateSource,
     DiscoveryResult,
-    SourceProposal,
+    SourceProposalSuggestion,
+    candidate_identifier,
 )
 from app.main import (
     app,
@@ -78,7 +79,7 @@ class FakeDiscovery:
         return DiscoveryResult(
             candidates=(candidate,),
             proposals=(
-                SourceProposal(
+                SourceProposalSuggestion(
                     candidate=candidate,
                     proposed_id="finance",
                     suggested_classification=Classification.MANAGEMENT_ONLY,
@@ -324,9 +325,20 @@ def test_source_discovery_returns_safe_candidates_only():
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
+    candidate_id = candidate_identifier(
+        CandidateSource(
+            system="google_workspace",
+            location_type="shared_drive",
+            location_id="finance_drive_123",
+            name="Finance",
+            classification_suggestion=Classification.MANAGEMENT_ONLY,
+            reasons=("new shared drive detected",),
+        )
+    )
     assert response.json() == {
         "candidates": [
             {
+                "candidate_id": candidate_id,
                 "name": "Finance",
                 "location_type": "shared_drive",
                 "classification_suggestion": "management_only",
@@ -338,6 +350,7 @@ def test_source_discovery_returns_safe_candidates_only():
             {
                 "type": "new_source_proposal",
                 "candidate": {
+                    "candidate_id": candidate_id,
                     "name": "Finance",
                     "location_type": "shared_drive",
                 },

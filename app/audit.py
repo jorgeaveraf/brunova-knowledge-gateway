@@ -95,6 +95,7 @@ def emit_audit_record(
     source_classification: str | list[str] | None = None,
     consumer: str | None = None,
     candidate_count: int | None = None,
+    proposal_id: str | None = None,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -123,6 +124,8 @@ def emit_audit_record(
         event["consumer"] = consumer
     if candidate_count is not None:
         event["candidate_count"] = candidate_count
+    if proposal_id:
+        event["proposal_id"] = proposal_id
     if error_code:
         event["error_code"] = error_code
     audit_logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))

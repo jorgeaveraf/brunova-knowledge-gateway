@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.10.1:
+Arquitectura v0.11:
 
 Agents
 ↓
@@ -184,6 +184,32 @@ permisos, configuración interna, documentos ni contenido. Discovery nunca crea
 entradas, cambia clasificaciones ni modifica `sources.yaml`: propone y el
 registry se aprueba únicamente mediante un cambio humano versionado.
 
+## Source Governance Support
+
+Cada candidato expone un `candidate_id` opaco y estable, derivado de su identidad
+de ubicación sin revelar el ID de Drive. El ID permite que un agente solicite
+detalles seguros mediante `get_source_candidate_details` sin que el Gateway
+mantenga estado de discovery entre requests. El detalle vuelve a ejecutar una
+consulta raíz acotada y devuelve nombre, tipo, clasificación sugerida, confianza
+y razones; nunca devuelve usuarios, permisos, documentos o contenido.
+
+`create_source_proposal` genera una intención inmutable con `proposal_id`,
+candidato interno, nombre sugerido, clasificación, motivo, timestamp, request ID
+y el único estado permitido: `pending_review`. La respuesta pública es un recibo
+con `proposal_id`, estado y request ID. La auditoría estructurada funciona como
+journal durable del recibo; v0.11 no incorpora un proposal store consultable ni
+pretende que el Gateway sea autoridad canónica.
+
+Crear una propuesta no aprueba, aplica ni agrega una fuente. No existe estado
+`approved` o `applied`, ni operación que modifique `sources.yaml`. El flujo es:
+
+```text
+Discovery → Candidate → Pending proposal → Human approval → Versioned registry change
+```
+
+La interpretación, comparación contra conocimiento canónico y aprobación
+pertenecen al Management Agent y a la persona responsable, no al Gateway.
+
 ## MCP
 
 El endpoint Streamable HTTP está montado en `/mcp` con MCP Python SDK 2.x,
@@ -196,6 +222,10 @@ Tools disponibles:
 - `list_sources`: metadata no sensible del registry;
 - `discover_source_candidates`: propone Shared Drives y carpetas raíz no
   registradas, sin ejecutar cambios;
+- `get_source_candidate_details`: devuelve detalle seguro de un candidato por
+  su identificador opaco;
+- `create_source_proposal`: registra un recibo `pending_review` auditable, sin
+  aprobar ni aplicar cambios;
 - `list_source_documents`: documentos autorizados de una fuente, con filtro
   opcional por nombre;
 - `retrieve_document`: lectura source-scoped de Google Docs;
@@ -204,7 +234,9 @@ Tools disponibles:
 Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
-propagan como tool errors legibles. No existen tools de escritura.
+propagan como tool errors legibles. Ningún tool escribe en Google Workspace ni
+modifica el Source Registry; `create_source_proposal` solo genera y audita una
+intención pendiente.
 
 ## Autenticación del Gateway
 
