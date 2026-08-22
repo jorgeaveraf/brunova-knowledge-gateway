@@ -106,6 +106,11 @@ class FakeSourcePolicy:
         assert source == TEST_SOURCE
         return AllowedSource(definition=source, context=self.authorize_context())
 
+    def authorize_resource_for_source(self, resource, source):
+        assert "allowed_folder_123" in resource.ancestor_ids
+        assert source.definition == TEST_SOURCE
+        return source.context
+
     @staticmethod
     def authorize_context():
         return SourceContext(
@@ -127,6 +132,15 @@ class RejectSourcePolicy:
         raise WorkspaceAdapterError(
             "source_not_allowed",
             "Resource is outside approved knowledge sources.",
+            403,
+        )
+
+
+class RejectMembershipPolicy(FakeSourcePolicy):
+    def authorize_resource_for_source(self, _resource, _source):
+        raise WorkspaceAdapterError(
+            "resource_not_in_source",
+            "The requested resource does not belong to the selected source.",
             403,
         )
 
@@ -291,6 +305,63 @@ def test_source_files_rejects_missing_and_blocked_sources():
     assert missing.json()["error"]["code"] == "source_not_found"
     assert blocked.status_code == 403
     assert blocked.json()["error"]["code"] == "source_not_allowed"
+
+
+def test_source_scoped_document_response():
+    app.dependency_overrides[get_source_registry] = fake_source_registry
+    app.dependency_overrides[get_docs_adapter] = FakeDocsAdapter
+    app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
+    app.dependency_overrides[get_source_policy] = FakeSourcePolicy
+    try:
+        response = TestClient(app).get(
+            "/sources/career_ops/docs/document_12345",
+            headers={"X-Correlation-ID": "source-doc-request"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "controlled content"
+    assert response.json()["request_id"] == "source-doc-request"
+    assert response.json()["source"]["id"] == "career_ops"
+
+
+def test_source_scoped_sheet_response():
+    app.dependency_overrides[get_source_registry] = fake_source_registry
+    app.dependency_overrides[get_sheets_adapter] = FakeSheetsAdapter
+    app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
+    app.dependency_overrides[get_source_policy] = FakeSourcePolicy
+    try:
+        response = TestClient(app).get(
+            "/sources/career_ops/sheets/spreadsheet_12345?range=A1:F10"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["values"] == [["Header"], ["Value"]]
+    assert response.json()["source"]["classification"] == "management_only"
+
+
+def test_source_scoped_content_rejects_resource_outside_selected_source():
+    app.dependency_overrides[get_source_registry] = fake_source_registry
+    app.dependency_overrides[get_docs_adapter] = FakeDocsAdapter
+    app.dependency_overrides[get_sheets_adapter] = FakeSheetsAdapter
+    app.dependency_overrides[get_workspace_adapter] = FakeWorkspaceAdapter
+    app.dependency_overrides[get_source_policy] = RejectMembershipPolicy
+    try:
+        client = TestClient(app)
+        document = client.get("/sources/career_ops/docs/document_12345")
+        sheet = client.get(
+            "/sources/career_ops/sheets/spreadsheet_12345?range=A1:F10"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert document.status_code == 403
+    assert document.json()["error"]["code"] == "resource_not_in_source"
+    assert sheet.status_code == 403
+    assert sheet.json()["error"]["code"] == "resource_not_in_source"
 
 
 def test_document_content_response():

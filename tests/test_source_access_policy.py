@@ -120,6 +120,30 @@ def test_explicitly_selected_blocked_source_is_rejected():
     assert error.value.code == "source_not_allowed"
 
 
+def test_resource_must_belong_to_explicitly_selected_source():
+    source_registry = registry()
+    policy = SourceAccessPolicy(settings(), source_registry)
+    selected = policy.authorize_source(source_registry.get("career_ops"))
+
+    with pytest.raises(WorkspaceAdapterError) as error:
+        policy.authorize_resource_for_source(
+            resource(ancestors=("another_folder_123",)),
+            selected,
+        )
+
+    assert error.value.code == "resource_not_in_source"
+
+
+def test_resource_in_explicitly_selected_source_is_authorized():
+    source_registry = registry()
+    policy = SourceAccessPolicy(settings(), source_registry)
+    selected = policy.authorize_source(source_registry.get("career_ops"))
+
+    context = policy.authorize_resource_for_source(resource(), selected)
+
+    assert context.source_id == "career_ops"
+
+
 def test_resource_outside_registry_is_rejected():
     policy = SourceAccessPolicy(settings(), registry())
 

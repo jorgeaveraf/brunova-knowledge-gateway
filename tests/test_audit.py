@@ -23,6 +23,28 @@ def test_source_files_route_has_audit_context():
     )
 
 
+def test_source_scoped_content_routes_have_audit_context():
+    document = SimpleNamespace(
+        url=SimpleNamespace(path="/sources/career_ops/docs/document_123"),
+        path_params={"document_id": "document_123"},
+    )
+    sheet = SimpleNamespace(
+        url=SimpleNamespace(path="/sources/career_ops/sheets/spreadsheet_123"),
+        path_params={"spreadsheet_id": "spreadsheet_123"},
+    )
+
+    assert request_audit_context(document) == (
+        "read_document",
+        "document_123",
+        "google_doc",
+    )
+    assert request_audit_context(sheet) == (
+        "read_sheet_range",
+        "spreadsheet_123",
+        "google_sheet",
+    )
+
+
 def test_audit_event_contains_metadata_but_no_content(monkeypatch):
     monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
     monkeypatch.setenv(

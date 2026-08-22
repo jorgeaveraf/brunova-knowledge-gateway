@@ -91,6 +91,26 @@ class SourceAccessPolicy:
                 return ClassificationPolicy.apply(source)
         raise self._not_allowed()
 
+    def authorize_resource_for_source(
+        self,
+        resource: WorkspaceResource,
+        source: AllowedSource,
+    ) -> SourceContext:
+        """Require a resource to belong to the explicitly selected source."""
+
+        resource_locations = {resource.id, *resource.ancestor_ids}
+        if resource.drive_id:
+            resource_locations.add(resource.drive_id)
+        if resource_locations & self._blocked:
+            raise self._not_allowed()
+        if source.definition.location_id not in resource_locations:
+            raise WorkspaceAdapterError(
+                "resource_not_in_source",
+                "The requested resource does not belong to the selected source.",
+                403,
+            )
+        return source.context
+
     def is_blocked_id(self, resource_id: str) -> bool:
         return resource_id in self._blocked
 

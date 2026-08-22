@@ -19,17 +19,20 @@ from app.adapters.google_workspace.models import (
 )
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.config.settings import Settings, get_settings
+from app.knowledge import (
+    list_authorized_source_files,
+    list_registered_sources,
+    registered_source,
+    retrieve_authorized_document,
+    retrieve_authorized_sheet_range,
+)
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.policies.source_access import SourceAccessPolicy
-from app.source_registry import (
-    SourceDefinition,
-    SourceRegistry,
-    SourceRegistryMetadata,
-)
+from app.source_registry import SourceRegistry, SourceRegistryMetadata
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.6.0",
+    version="0.7.0",
 )
 
 
@@ -85,17 +88,6 @@ DocsAdapter = Annotated[GoogleDocsAdapter, Depends(get_docs_adapter)]
 SheetsAdapter = Annotated[GoogleSheetsAdapter, Depends(get_sheets_adapter)]
 SourcePolicy = Annotated[SourceAccessPolicy, Depends(get_source_policy)]
 Registry = Annotated[SourceRegistry, Depends(get_source_registry)]
-
-
-def _registered_source(registry: SourceRegistry, source_id: str) -> SourceDefinition:
-    try:
-        return registry.get(source_id)
-    except KeyError as error:
-        raise WorkspaceAdapterError(
-            "source_not_found",
-            "The requested knowledge source is not registered.",
-            404,
-        ) from error
 
 
 @app.middleware("http")
@@ -243,15 +235,13 @@ def workspace_drive_list(
 
 @app.get("/sources", response_model=list[SourceRegistryMetadata])
 def list_sources(registry: Registry) -> list[SourceRegistryMetadata]:
-    return [
-        SourceRegistryMetadata.from_definition(source) for source in registry.sources
-    ]
+    return list_registered_sources(registry)
 
 
 @app.get("/sources/{source_id}", response_model=SourceRegistryMetadata)
 def get_source(source_id: str, registry: Registry) -> SourceRegistryMetadata:
     return SourceRegistryMetadata.from_definition(
-        _registered_source(registry, source_id)
+        registered_source(registry, source_id)
     )
 
 
@@ -265,21 +255,79 @@ def source_files(
     limit: Annotated[int, Query(ge=1)] = 10,
 ) -> DriveListResponse:
     request.state.source_id = source_id
-    source = _registered_source(registry, source_id)
+    source = registered_source(registry, source_id)
     request.state.classification = source.classification.value
-    allowed_source = source_policy.authorize_source(source)
-    safe_limit = DriveReadPolicy.validate_list_limit(limit)
+    _, files = list_authorized_source_files(
+        registry=registry,
+        source_policy=source_policy,
+        workspace_adapter=adapter,
+        source_id=source_id,
+        limit=limit,
+    )
     return DriveListResponse(
-        files=adapter.list_source_files(
-            source=allowed_source,
-            limit=safe_limit,
-            source_policy=source_policy,
-        ),
+        files=files,
         request_id=request.state.request_id,
     )
 
 
-@app.get("/workspace/docs/{document_id}", response_model=GoogleDocContent)
+@app.get("/sources/{source_id}/docs/{document_id}", response_model=GoogleDocContent)
+def source_document(
+    request: Request,
+    source_id: str,
+    document_id: str,
+    registry: Registry,
+    workspace_adapter: WorkspaceAdapter,
+    adapter: DocsAdapter,
+    source_policy: SourcePolicy,
+) -> GoogleDocContent:
+    request.state.source_id = source_id
+    source = registered_source(registry, source_id)
+    request.state.classification = source.classification.value
+    _, result = retrieve_authorized_document(
+        registry=registry,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        docs_adapter=adapter,
+        source_id=source_id,
+        document_id=document_id,
+    )
+    return result.model_copy(update={"request_id": request.state.request_id})
+
+
+@app.get(
+    "/sources/{source_id}/sheets/{spreadsheet_id}",
+    response_model=SheetRangeContent,
+)
+def source_sheet_range(
+    request: Request,
+    source_id: str,
+    spreadsheet_id: str,
+    registry: Registry,
+    workspace_adapter: WorkspaceAdapter,
+    adapter: SheetsAdapter,
+    source_policy: SourcePolicy,
+    range_: Annotated[str, Query(alias="range", min_length=1, max_length=500)],
+) -> SheetRangeContent:
+    request.state.source_id = source_id
+    source = registered_source(registry, source_id)
+    request.state.classification = source.classification.value
+    _, result = retrieve_authorized_sheet_range(
+        registry=registry,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        sheets_adapter=adapter,
+        source_id=source_id,
+        spreadsheet_id=spreadsheet_id,
+        range_name=range_,
+    )
+    return result.model_copy(update={"request_id": request.state.request_id})
+
+
+@app.get(
+    "/workspace/docs/{document_id}",
+    response_model=GoogleDocContent,
+    deprecated=True,
+)
 def workspace_document(
     request: Request,
     document_id: str,
@@ -306,7 +354,11 @@ def workspace_document(
     )
 
 
-@app.get("/workspace/sheets/{spreadsheet_id}", response_model=SheetRangeContent)
+@app.get(
+    "/workspace/sheets/{spreadsheet_id}",
+    response_model=SheetRangeContent,
+    deprecated=True,
+)
 def workspace_sheet_range(
     request: Request,
     spreadsheet_id: str,
