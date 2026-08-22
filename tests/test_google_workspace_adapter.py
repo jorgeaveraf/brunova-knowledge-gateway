@@ -135,3 +135,42 @@ def test_list_source_files_queries_only_the_selected_authorized_source():
         fields="files(id,name,mimeType)",
         orderBy="modifiedTime desc",
     )
+
+
+def test_discovery_detects_unregistered_shared_drives_and_root_folders():
+    shared_request = Mock()
+    shared_request.execute.return_value = {
+        "drives": [
+            {"id": "finance_drive_123", "name": "Finance"},
+            {"id": "registered_drive_123", "name": "Registered"},
+        ]
+    }
+    drives = Mock()
+    drives.list.return_value = shared_request
+    folder_request = Mock()
+    folder_request.execute.return_value = {
+        "files": [{"id": "sales_folder_123", "name": "Sales"}]
+    }
+    files = Mock()
+    files.list.return_value = folder_request
+    drive = Mock()
+    drive.drives.return_value = drives
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+
+    result = adapter.discover_source_candidates(
+        excluded_location_ids=frozenset({"registered_drive_123"}),
+        limit=5,
+    )
+
+    assert [(item.name, item.location_type) for item in result] == [
+        ("Finance", "shared_drive"),
+        ("Sales", "folder"),
+    ]
+    assert all(
+        item.classification_suggestion.value == "management_only" for item in result
+    )

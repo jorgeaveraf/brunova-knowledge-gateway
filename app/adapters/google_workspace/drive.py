@@ -17,6 +17,8 @@ from app.adapters.google_workspace.models import (
 from app.config.settings import Settings
 from app.policies.classification import SourceContext
 from app.policies.source_access import AllowedSource, SourceAccessPolicy
+from app.source_discovery.interface import CandidateSource
+from app.source_registry import Classification
 
 ServiceBuilder = Callable[..., Any]
 
@@ -182,6 +184,78 @@ class GoogleWorkspaceAdapter:
                 drive_id=metadata.get("driveId"),
                 ancestor_ids=tuple(ancestors),
             )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def discover_source_candidates(
+        self,
+        *,
+        excluded_location_ids: frozenset[str],
+        limit: int,
+    ) -> list[CandidateSource]:
+        """Discover bounded Workspace locations without changing the registry."""
+
+        try:
+            drive = self._drive()
+            candidates: list[CandidateSource] = []
+            shared_drives = (
+                drive.drives()
+                .list(pageSize=limit, fields="drives(id,name)")
+                .execute()
+            )
+            for item in shared_drives.get("drives", []):
+                location_id = item.get("id", "")
+                if not location_id or location_id in excluded_location_ids:
+                    continue
+                candidates.append(
+                    CandidateSource(
+                        system="google_workspace",
+                        location_type="shared_drive",
+                        location_id=location_id,
+                        name=item.get("name", ""),
+                        classification_suggestion=Classification.MANAGEMENT_ONLY,
+                        reasons=("new shared drive detected",),
+                    )
+                )
+                if len(candidates) >= limit:
+                    return candidates
+
+            remaining = limit - len(candidates)
+            root_folders = (
+                drive.files()
+                .list(
+                    q=(
+                        "'root' in parents and "
+                        "mimeType='application/vnd.google-apps.folder' and "
+                        "trashed=false"
+                    ),
+                    spaces="drive",
+                    pageSize=remaining,
+                    fields="files(id,name)",
+                    orderBy="name",
+                )
+                .execute()
+            )
+            for item in root_folders.get("files", []):
+                location_id = item.get("id", "")
+                if not location_id or location_id in excluded_location_ids:
+                    continue
+                candidates.append(
+                    CandidateSource(
+                        system="google_workspace",
+                        location_type="folder",
+                        location_id=location_id,
+                        name=item.get("name", ""),
+                        classification_suggestion=Classification.MANAGEMENT_ONLY,
+                        reasons=(
+                            "unregistered root folder detected",
+                            "located under delegated user's Drive root",
+                        ),
+                    )
+                )
+                if len(candidates) >= limit:
+                    break
+            return candidates
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
 

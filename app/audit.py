@@ -35,6 +35,8 @@ def request_audit_context(request: Request) -> tuple[str | None, str | None, str
     path = request.url.path
     if path == "/workspace/drive/list":
         return "list_files", None, "google_drive"
+    if path == "/sources/discover":
+        return "discover_sources", None, "google_drive"
     if path.startswith("/sources/") and path.endswith("/files"):
         return "list_files", None, "google_drive"
     if path.startswith("/sources/") and "/docs/" in path:

@@ -45,6 +45,19 @@ def test_source_scoped_content_routes_have_audit_context():
     )
 
 
+def test_source_discovery_route_has_audit_context():
+    request = SimpleNamespace(
+        url=SimpleNamespace(path="/sources/discover"),
+        path_params={},
+    )
+
+    assert request_audit_context(request) == (
+        "discover_sources",
+        None,
+        "google_drive",
+    )
+
+
 def test_audit_event_contains_metadata_but_no_content(monkeypatch):
     monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
     monkeypatch.setenv(

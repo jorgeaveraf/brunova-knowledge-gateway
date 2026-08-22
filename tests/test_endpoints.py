@@ -16,11 +16,17 @@ from app.source_registry import (
     SourceRegistry,
     SourceRegistryDocument,
 )
+from app.source_discovery.interface import (
+    CandidateSource,
+    DiscoveryResult,
+    SourceProposal,
+)
 from app.main import (
     app,
     get_docs_adapter,
     get_sheets_adapter,
     get_source_policy,
+    get_source_discovery,
     get_source_registry,
     get_workspace_adapter,
 )
@@ -45,6 +51,30 @@ TEST_REGISTRY = SourceRegistry(
 
 def fake_source_registry():
     return TEST_REGISTRY
+
+
+class FakeDiscovery:
+    def discover(self, *, limit=25):
+        assert limit == 5
+        candidate = CandidateSource(
+            system="google_workspace",
+            location_type="shared_drive",
+            location_id="finance_drive_123",
+            name="Finance",
+            classification_suggestion=Classification.MANAGEMENT_ONLY,
+            reasons=("new shared drive detected",),
+        )
+        return DiscoveryResult(
+            candidates=(candidate,),
+            proposals=(
+                SourceProposal(
+                    candidate=candidate,
+                    proposed_id="finance",
+                    proposed_classification=Classification.MANAGEMENT_ONLY,
+                    rationale="new shared drive detected",
+                ),
+            ),
+        )
 
 
 class FakeWorkspaceAdapter:
@@ -267,6 +297,27 @@ def test_source_detail_returns_safe_metadata_and_missing_source_is_404():
     assert response.json()["classification"] == "management_only"
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "source_not_found"
+
+
+def test_source_discovery_returns_safe_candidates_only():
+    app.dependency_overrides[get_source_discovery] = FakeDiscovery
+    try:
+        response = TestClient(app).get("/sources/discover?limit=5")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "candidates": [
+            {
+                "name": "Finance",
+                "location_type": "shared_drive",
+                "classification_suggestion": "management_only",
+                "reason": ["new shared drive detected"],
+            }
+        ]
+    }
+    assert "finance_drive_123" not in response.text
 
 
 def test_source_files_resolves_authorizes_and_lists_one_source():

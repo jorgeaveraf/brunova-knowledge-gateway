@@ -28,11 +28,17 @@ from app.knowledge import (
 )
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
 from app.policies.source_access import SourceAccessPolicy
+from app.source_discovery.google_workspace import GoogleWorkspaceSourceDiscovery
+from app.source_discovery.interface import (
+    CandidateSourceMetadata,
+    DiscoveryResponse,
+    SourceDiscovery,
+)
 from app.source_registry import SourceRegistry, SourceRegistryMetadata
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.7.0",
+    version="0.8.0",
 )
 
 
@@ -88,6 +94,21 @@ DocsAdapter = Annotated[GoogleDocsAdapter, Depends(get_docs_adapter)]
 SheetsAdapter = Annotated[GoogleSheetsAdapter, Depends(get_sheets_adapter)]
 SourcePolicy = Annotated[SourceAccessPolicy, Depends(get_source_policy)]
 Registry = Annotated[SourceRegistry, Depends(get_source_registry)]
+
+
+def get_source_discovery(
+    registry: Registry,
+    adapter: WorkspaceAdapter,
+) -> GoogleWorkspaceSourceDiscovery:
+    settings = _get_valid_settings()
+    return GoogleWorkspaceSourceDiscovery(
+        adapter,
+        registry,
+        blocked_location_ids=settings.workspace_blocked_source_ids,
+    )
+
+
+Discovery = Annotated[SourceDiscovery, Depends(get_source_discovery)]
 
 
 @app.middleware("http")
@@ -236,6 +257,21 @@ def workspace_drive_list(
 @app.get("/sources", response_model=list[SourceRegistryMetadata])
 def list_sources(registry: Registry) -> list[SourceRegistryMetadata]:
     return list_registered_sources(registry)
+
+
+@app.get("/sources/discover", response_model=DiscoveryResponse)
+def discover_sources(
+    discovery: Discovery,
+    limit: Annotated[int, Query(ge=1)] = 25,
+) -> DiscoveryResponse:
+    safe_limit = DriveReadPolicy.validate_list_limit(limit)
+    result = discovery.discover(limit=safe_limit)
+    return DiscoveryResponse(
+        candidates=[
+            CandidateSourceMetadata.from_candidate(candidate)
+            for candidate in result.candidates
+        ]
+    )
 
 
 @app.get("/sources/{source_id}", response_model=SourceRegistryMetadata)
