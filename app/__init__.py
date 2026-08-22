@@ -1,0 +1,1 @@
+"""Brunova Knowledge Gateway application."""
