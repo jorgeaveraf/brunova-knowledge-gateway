@@ -208,10 +208,12 @@ def workspace_drive_list(
         source_ids = {item.source.id for item in files}
         classifications = {item.source.classification for item in files}
         request.state.source_id = (
-            next(iter(source_ids)) if len(source_ids) == 1 else "multiple"
+            next(iter(source_ids)) if len(source_ids) == 1 else sorted(source_ids)
         )
         request.state.classification = (
-            next(iter(classifications)) if len(classifications) == 1 else "mixed"
+            next(iter(classifications)).value
+            if len(classifications) == 1
+            else sorted(item.value for item in classifications)
         )
     return DriveListResponse(
         files=files,
