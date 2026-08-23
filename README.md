@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.15:
+Arquitectura v0.16:
 
 Agents
 ↓
@@ -334,6 +334,8 @@ Tools disponibles:
   Drive con capability `delete`;
 - `share_source_artifact`: concede acceso `reader` a una audiencia de correo
   explícita con capability `share`;
+- `inspect_source_artifacts`: identifica metadata segura de artefactos nativos
+  y Office dentro de una fuente aprobada y con lectura habilitada;
 - `list_source_documents`: documentos autorizados de una fuente, con filtro
   opcional por nombre;
 - `retrieve_document`: lectura source-scoped de Google Docs;
@@ -345,6 +347,21 @@ cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy 
 propagan como tool errors legibles. Solo los cinco tools de mutación anteriores
 escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
 herramientas de proposals solo persisten o consultan intenciones pendientes.
+
+## Office Artifact Awareness
+
+`inspect_source_artifacts` lista como máximo 100 artefactos reconocidos de la
+fuente seleccionada. Distingue `native_artifact` para Google Docs, Sheets y
+Slides, y `office_artifact` para XLSX, XLSM, DOCX y PPTX. La respuesta contiene
+solo `name`, `type`, `mime_type`, `extension`, `size`, `modified_time` y
+`source_id`; no contiene IDs de Drive, contenido, propietarios, permisos ni
+usuarios.
+
+La extensión se deriva de un MIME type Office conocido, no del nombre del
+archivo. Esta capacidad es únicamente de inspección: no convierte, reemplaza,
+archiva ni elimina artefactos y no modifica el Source Registry. Cualquier
+normalización futura deberá seguir un workflow separado con decisión del
+Management Agent y aprobación humana.
 
 ## Historial operacional
 

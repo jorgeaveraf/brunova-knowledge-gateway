@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import (
+    ArtifactMetadata,
     DriveFile,
     GoogleDocContent,
     SheetRangeContent,
@@ -30,6 +31,7 @@ from app.knowledge import (
     create_authorized_source_artifact,
     delete_authorized_source_artifact,
     get_candidate_details,
+    inspect_authorized_source_artifacts,
     list_authorized_source_files,
     list_registered_sources,
     list_registered_source_proposals,
@@ -62,6 +64,11 @@ class SourceListToolResult(BaseModel):
 
 class DocumentListToolResult(BaseModel):
     documents: list[DriveFile]
+    request_id: str
+
+
+class ArtifactInspectionToolResult(BaseModel):
+    artifacts: list[ArtifactMetadata]
     request_id: str
 
 
@@ -98,7 +105,7 @@ class OperationHistoryToolResult(BaseModel):
 
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.15.0",
+    version="0.16.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
         "execute full capability-gated Google Workspace CRUD operations with an "
@@ -580,6 +587,37 @@ def list_source_documents(
         operation=operation,
         source_id=source_id,
         resource_type="google_drive",
+    )
+
+
+@mcp_server.tool()
+def inspect_source_artifacts(
+    source_id: str,
+    ctx: Context,
+) -> ArtifactInspectionToolResult:
+    """Inspect safe native and Office artifact metadata in one approved source."""
+
+    def operation(
+        runtime: KnowledgeRuntime,
+        request_id: str,
+    ) -> ArtifactInspectionToolResult:
+        _, artifacts = inspect_authorized_source_artifacts(
+            registry=runtime.registry,
+            source_policy=runtime.source_policy,
+            workspace_adapter=runtime.workspace_adapter,
+            source_id=source_id,
+        )
+        return ArtifactInspectionToolResult(
+            artifacts=artifacts,
+            request_id=request_id,
+        )
+
+    return _execute_tool(
+        ctx=ctx,
+        action="inspect_source_artifacts",
+        operation=operation,
+        source_id=source_id,
+        resource_type="source_artifact_metadata",
     )
 
 

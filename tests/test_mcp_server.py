@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from mcp import Client
 
 from app.adapters.google_workspace.models import (
+    ArtifactMetadata,
     DriveFile,
     GoogleDocContent,
     SheetRangeContent,
@@ -98,6 +99,21 @@ class FakeWorkspaceAdapter:
                     classification="management_only",
                 ),
             ),
+        ]
+
+    def inspect_source_artifacts(self, *, source, limit):
+        assert source.definition.id == "career_ops"
+        assert limit == 100
+        return [
+            ArtifactMetadata(
+                name="Forecast.xlsm",
+                type="office_artifact",
+                mime_type="application/vnd.ms-excel.sheet.macroenabled.12",
+                extension="xlsm",
+                size=4096,
+                modified_time="2026-08-23T11:00:00Z",
+                source_id=source.definition.id,
+            )
         ]
 
     def get_resource(self, resource_id):
@@ -256,7 +272,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_fifteen_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_sixteen_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -281,7 +297,58 @@ def test_mcp_exposes_only_the_fifteen_governed_tools(monkeypatch):
         "get_operation_history",
         "delete_source_artifact",
         "share_source_artifact",
+        "inspect_source_artifacts",
     }
+
+
+def test_mcp_inspects_source_scoped_safe_artifact_metadata_and_audits(monkeypatch):
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "inspect_source_artifacts",
+                {"source_id": "career_ops"},
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is False
+    artifact = result.structured_content["artifacts"][0]
+    assert artifact == {
+        "name": "Forecast.xlsm",
+        "type": "office_artifact",
+        "mime_type": "application/vnd.ms-excel.sheet.macroenabled.12",
+        "extension": "xlsm",
+        "size": 4096,
+        "modified_time": "2026-08-23T11:00:00Z",
+        "source_id": "career_ops",
+    }
+    assert not ({"id", "owners", "permissions", "content"} & set(artifact))
+    assert audit.call_args.kwargs["action"] == "inspect_source_artifacts"
+    assert audit.call_args.kwargs["source_id"] == "career_ops"
+    assert audit.call_args.kwargs["result"] == "success"
+
+
+def test_mcp_artifact_inspection_rejects_unknown_source(monkeypatch):
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "inspect_source_artifacts",
+                {"source_id": "unknown_source"},
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is True
+    assert "source_not_found" in result.content[0].text
+    assert audit.call_args.kwargs["error_code"] == "source_not_found"
 
 
 def test_mcp_discovers_safe_source_proposals_and_audits_count(monkeypatch):

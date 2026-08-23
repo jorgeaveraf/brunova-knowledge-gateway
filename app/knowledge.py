@@ -4,6 +4,7 @@ from app.adapters.google_workspace.docs import GoogleDocsAdapter
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import (
+    ArtifactMetadata,
     DriveFile,
     GoogleDocContent,
     SheetRangeContent,
@@ -316,6 +317,26 @@ def list_authorized_source_files(
         source_policy=source_policy,
     )
     return source, files
+
+
+def inspect_authorized_source_artifacts(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    source_id: str,
+    limit: int = 100,
+) -> tuple[SourceDefinition, list[ArtifactMetadata]]:
+    """Inspect safe artifact metadata within one registered, readable source."""
+
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    safe_limit = DriveReadPolicy.validate_list_limit(limit)
+    artifacts = workspace_adapter.inspect_source_artifacts(
+        source=allowed_source,
+        limit=safe_limit,
+    )
+    return source, artifacts
 
 
 def retrieve_authorized_document(

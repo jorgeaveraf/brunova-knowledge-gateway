@@ -138,6 +138,150 @@ def test_list_source_files_queries_only_the_selected_authorized_source():
     )
 
 
+def test_inspect_source_artifacts_detects_office_and_native_formats_safely():
+    request = Mock()
+    request.execute.return_value = {
+        "files": [
+            {
+                "id": "must-not-leak",
+                "name": "Roadmap.xlsx",
+                "mimeType": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                "size": "2048",
+                "modifiedTime": "2026-08-23T10:00:00Z",
+                "owners": [{"emailAddress": "must-not-leak@example.com"}],
+            },
+            {
+                "name": "Forecast.xlsm",
+                "mimeType": "application/vnd.ms-excel.sheet.macroEnabled.12",
+                "size": "4096",
+                "modifiedTime": "2026-08-23T11:00:00Z",
+                "permissions": [{"type": "user"}],
+            },
+            {
+                "name": "Policy.docx",
+                "mimeType": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                "size": "1024",
+                "modifiedTime": "2026-08-23T11:30:00Z",
+            },
+            {
+                "name": "Briefing.pptx",
+                "mimeType": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "presentationml.presentation"
+                ),
+                "size": "8192",
+                "modifiedTime": "2026-08-23T11:45:00Z",
+            },
+            {
+                "name": "Operating Charter",
+                "mimeType": "application/vnd.google-apps.document",
+                "modifiedTime": "2026-08-23T12:00:00Z",
+            },
+            {"name": "Ignore.pdf", "mimeType": "application/pdf"},
+        ]
+    }
+    files = Mock()
+    files.list.return_value = request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    registry = source_registry()
+    source = SourceAccessPolicy(settings(), registry).authorize_source(
+        registry.get("career_ops")
+    )
+
+    result = adapter.inspect_source_artifacts(source=source, limit=25)
+
+    assert [item.model_dump() for item in result] == [
+        {
+            "name": "Roadmap.xlsx",
+            "type": "office_artifact",
+            "mime_type": (
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            "extension": "xlsx",
+            "size": 2048,
+            "modified_time": "2026-08-23T10:00:00Z",
+            "source_id": "career_ops",
+        },
+        {
+            "name": "Forecast.xlsm",
+            "type": "office_artifact",
+            "mime_type": "application/vnd.ms-excel.sheet.macroEnabled.12",
+            "extension": "xlsm",
+            "size": 4096,
+            "modified_time": "2026-08-23T11:00:00Z",
+            "source_id": "career_ops",
+        },
+        {
+            "name": "Policy.docx",
+            "type": "office_artifact",
+            "mime_type": (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            "extension": "docx",
+            "size": 1024,
+            "modified_time": "2026-08-23T11:30:00Z",
+            "source_id": "career_ops",
+        },
+        {
+            "name": "Briefing.pptx",
+            "type": "office_artifact",
+            "mime_type": (
+                "application/vnd.openxmlformats-officedocument."
+                "presentationml.presentation"
+            ),
+            "extension": "pptx",
+            "size": 8192,
+            "modified_time": "2026-08-23T11:45:00Z",
+            "source_id": "career_ops",
+        },
+        {
+            "name": "Operating Charter",
+            "type": "native_artifact",
+            "mime_type": "application/vnd.google-apps.document",
+            "extension": None,
+            "size": None,
+            "modified_time": "2026-08-23T12:00:00Z",
+            "source_id": "career_ops",
+        },
+    ]
+    assert all(
+        set(item.model_dump())
+        == {
+            "name",
+            "type",
+            "mime_type",
+            "extension",
+            "size",
+            "modified_time",
+            "source_id",
+        }
+        for item in result
+    )
+    files.list.assert_called_once_with(
+        q="'allowed_folder_123' in parents and trashed=false",
+        spaces="drive",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
+        pageSize=25,
+        fields="files(name,mimeType,size,modifiedTime)",
+        orderBy="modifiedTime desc",
+    )
+
+
 def test_discovery_detects_unregistered_shared_drives_and_root_folders():
     shared_request = Mock()
     shared_request.execute.return_value = {

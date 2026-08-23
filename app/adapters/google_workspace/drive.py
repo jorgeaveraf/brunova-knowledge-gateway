@@ -10,6 +10,7 @@ from googleapiclient.errors import HttpError
 from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
 from app.adapters.google_workspace.models import (
+    ArtifactMetadata,
     DriveFile,
     SourceMetadata,
     WorkspaceResource,
@@ -28,6 +29,18 @@ MIME_TYPES = {
     "application/vnd.google-apps.presentation": "presentation",
     "application/vnd.google-apps.folder": "folder",
 }
+NATIVE_ARTIFACT_MIME_TYPES = {
+    "application/vnd.google-apps.document": None,
+    "application/vnd.google-apps.spreadsheet": None,
+    "application/vnd.google-apps.presentation": None,
+}
+OFFICE_ARTIFACT_MIME_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+}
+ARTIFACT_METADATA_FIELDS = "files(name,mimeType,size,modifiedTime)"
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
 GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
@@ -93,6 +106,50 @@ class GoogleWorkspaceAdapter:
             source_policy=source_policy,
         )
 
+    def inspect_source_artifacts(
+        self,
+        *,
+        source: AllowedSource,
+        limit: int,
+    ) -> list[ArtifactMetadata]:
+        """Return safe format metadata for recognized artifacts in one source."""
+
+        try:
+            drive = self._drive()
+            response = self._list_source_location(
+                drive,
+                source,
+                page_size=limit,
+                fields=ARTIFACT_METADATA_FIELDS,
+            )
+            artifacts: list[ArtifactMetadata] = []
+            for item in response.get("files", []):
+                mime_type = str(item.get("mimeType", ""))
+                normalized_mime_type = mime_type.casefold()
+                if normalized_mime_type in NATIVE_ARTIFACT_MIME_TYPES:
+                    artifact_type = "native_artifact"
+                    extension = None
+                elif normalized_mime_type in OFFICE_ARTIFACT_MIME_TYPES:
+                    artifact_type = "office_artifact"
+                    extension = OFFICE_ARTIFACT_MIME_TYPES[normalized_mime_type]
+                else:
+                    continue
+                raw_size = item.get("size")
+                artifacts.append(
+                    ArtifactMetadata(
+                        name=item.get("name", ""),
+                        type=artifact_type,
+                        mime_type=mime_type,
+                        extension=extension,
+                        size=int(raw_size) if raw_size is not None else None,
+                        modified_time=item.get("modifiedTime", ""),
+                        source_id=source.context.source_id,
+                    )
+                )
+            return artifacts
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
     def _list_allowed_sources(
         self,
         *,
@@ -130,14 +187,18 @@ class GoogleWorkspaceAdapter:
 
     @staticmethod
     def _list_source_location(
-        drive: Any, source: AllowedSource, *, page_size: int
+        drive: Any,
+        source: AllowedSource,
+        *,
+        page_size: int,
+        fields: str = "files(id,name,mimeType)",
     ) -> dict[str, Any]:
         definition = source.definition
         common = {
             "includeItemsFromAllDrives": True,
             "supportsAllDrives": True,
             "pageSize": page_size,
-            "fields": "files(id,name,mimeType)",
+            "fields": fields,
             "orderBy": "modifiedTime desc",
         }
         if definition.location_type == "shared_drive":

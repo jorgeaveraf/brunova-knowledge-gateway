@@ -53,6 +53,16 @@ class DriveListResponse(BaseModel):
     request_id: str
 
 
+class ArtifactMetadata(BaseModel):
+    name: str
+    type: Literal["native_artifact", "office_artifact"]
+    mime_type: str
+    extension: Optional[str] = None
+    size: Optional[int] = None
+    modified_time: str
+    source_id: str
+
+
 class GoogleDocContent(BaseModel):
     id: str
     name: str
