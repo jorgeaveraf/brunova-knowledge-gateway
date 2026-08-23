@@ -19,6 +19,8 @@ class GovernedOperation(str, Enum):
     CREATE_SOURCE_ARTIFACT = "create_source_artifact"
     UPDATE_SOURCE_ARTIFACT = "update_source_artifact"
     MOVE_SOURCE_ARTIFACT = "move_source_artifact"
+    DELETE_SOURCE_ARTIFACT = "delete_source_artifact"
+    SHARE_SOURCE_ARTIFACT = "share_source_artifact"
 
 
 class OperationResult(str, Enum):

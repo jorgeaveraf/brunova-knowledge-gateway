@@ -76,13 +76,13 @@ class SheetRangeContent(BaseModel):
 class SourceArtifact(BaseModel):
     id: str
     name: str
-    type: Literal["document"]
+    type: Literal["document", "spreadsheet", "presentation", "folder", "file"]
 
 
 class SourceArtifactMutationResult(BaseModel):
     artifact: SourceArtifact
     source: SourceMetadata
-    status: Literal["created", "updated", "moved"]
+    status: Literal["created", "updated", "moved", "deleted", "shared"]
     request_id: Optional[str] = None
 
 

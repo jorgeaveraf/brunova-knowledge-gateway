@@ -31,5 +31,5 @@ sources:
       create: true
       update: true
       move: true
-      delete: false
-      share: false
+      delete: true
+      share: true

@@ -58,8 +58,8 @@ def registry(*, mutation_enabled=True):
                 "create": mutation_enabled,
                 "update": mutation_enabled,
                 "move": mutation_enabled,
-                "delete": False,
-                "share": False,
+                "delete": mutation_enabled,
+                "share": mutation_enabled,
             },
         }
     )
@@ -71,6 +71,8 @@ class FakeWorkspaceAdapter:
         self.in_source = in_source
         self.created = []
         self.moved = []
+        self.deleted = []
+        self.shared = []
 
     def list_source_files(self, *, source, limit, source_policy):
         assert source.definition.id == "career_ops"
@@ -145,6 +147,14 @@ class FakeWorkspaceAdapter:
             ancestor_ids=(destination.id, "allowed_folder_123"),
             parent_ids=(destination.id,),
         )
+
+    def delete_resource(self, *, resource):
+        self.deleted.append(resource.id)
+        return resource
+
+    def share_resource(self, *, resource, audience):
+        self.shared.append((resource.id, audience))
+        return resource
 
 
 class FakeDocsAdapter:
@@ -246,7 +256,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_thirteen_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_fifteen_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -269,6 +279,8 @@ def test_mcp_exposes_only_the_thirteen_governed_tools(monkeypatch):
         "update_source_artifact",
         "move_source_artifact",
         "get_operation_history",
+        "delete_source_artifact",
+        "share_source_artifact",
     }
 
 
@@ -444,9 +456,26 @@ def test_mcp_governed_mutations_require_capabilities_scope_and_approval(monkeypa
                     "approval_reference": "decision-v013-test",
                 },
             )
-            return created, updated, moved
+            deleted = await client.call_tool(
+                "delete_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "created_document_123",
+                    "approval_reference": "decision-v015-test",
+                },
+            )
+            shared = await client.call_tool(
+                "share_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "created_document_123",
+                    "audience": "REVIEWER@BRUNOVA.MX",
+                    "approval_reference": "decision-v015-test",
+                },
+            )
+            return created, updated, moved, deleted, shared
 
-    created, updated, moved = run(scenario())
+    created, updated, moved, deleted, shared = run(scenario())
 
     assert created.is_error is False
     assert created.structured_content["status"] == "created"
@@ -454,6 +483,10 @@ def test_mcp_governed_mutations_require_capabilities_scope_and_approval(monkeypa
     assert updated.structured_content["status"] == "updated"
     assert moved.is_error is False
     assert moved.structured_content["status"] == "moved"
+    assert deleted.is_error is False
+    assert deleted.structured_content["status"] == "deleted"
+    assert shared.is_error is False
+    assert shared.structured_content["status"] == "shared"
     assert gateway_runtime.workspace_adapter.created == [
         ("career_ops", "Controlled Test")
     ]
@@ -463,17 +496,25 @@ def test_mcp_governed_mutations_require_capabilities_scope_and_approval(monkeypa
     assert gateway_runtime.workspace_adapter.moved == [
         ("created_document_123", "destination_folder_123")
     ]
-    mutation_audits = audit.call_args_list[-3:]
+    assert gateway_runtime.workspace_adapter.deleted == ["created_document_123"]
+    assert gateway_runtime.workspace_adapter.shared == [
+        ("created_document_123", "reviewer@brunova.mx")
+    ]
+    mutation_audits = audit.call_args_list[-5:]
     assert [call.kwargs["action"] for call in mutation_audits] == [
         "create_source_artifact",
         "update_source_artifact",
         "move_source_artifact",
+        "delete_source_artifact",
+        "share_source_artifact",
     ]
     assert all(
-        call.kwargs["approval_reference"] == "decision-v013-test"
+        call.kwargs["approval_reference"]
+        in ("decision-v013-test", "decision-v015-test")
         for call in mutation_audits
     )
     assert all("change" not in call.kwargs for call in mutation_audits)
+    assert mutation_audits[-1].kwargs["audience"] == "reviewer@brunova.mx"
 
 
 def test_mcp_mutation_blocks_missing_approval_and_capability(monkeypatch):
@@ -497,12 +538,12 @@ def test_mcp_mutation_blocks_missing_approval_and_capability(monkeypatch):
                 },
             )
             denied_capability = await client.call_tool(
-                "create_source_artifact",
+                "share_source_artifact",
                 {
                     "source_id": "career_ops",
-                    "name": "Blocked Test",
-                    "type": "document",
-                    "approval_reference": "decision-v013-test",
+                    "artifact_id": "created_document_123",
+                    "audience": "reviewer@brunova.mx",
+                    "approval_reference": "decision-v015-test",
                 },
             )
             return missing_approval, denied_capability
@@ -517,6 +558,124 @@ def test_mcp_mutation_blocks_missing_approval_and_capability(monkeypatch):
         "mutation_approval_required",
         "source_capability_denied",
     ]
+
+
+def test_mcp_delete_and_share_block_artifacts_outside_selected_source(monkeypatch):
+    gateway_runtime = runtime(in_source=False)
+    monkeypatch.setattr(
+        mcp_module,
+        "get_runtime_gateway",
+        lambda: gateway_runtime,
+    )
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            deleted = await client.call_tool(
+                "delete_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "outside_document_123",
+                    "approval_reference": "decision-v015-test",
+                },
+            )
+            shared = await client.call_tool(
+                "share_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "outside_document_123",
+                    "audience": "reviewer@brunova.mx",
+                    "approval_reference": "decision-v015-test",
+                },
+            )
+            return deleted, shared
+
+    deleted, shared = run(scenario())
+
+    assert deleted.is_error is True
+    assert "resource_not_in_source" in deleted.content[0].text
+    assert shared.is_error is True
+    assert "resource_not_in_source" in shared.content[0].text
+    assert gateway_runtime.workspace_adapter.deleted == []
+    assert gateway_runtime.workspace_adapter.shared == []
+
+
+def test_mcp_delete_and_share_require_approval_reference(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(
+        mcp_module,
+        "get_runtime_gateway",
+        lambda: gateway_runtime,
+    )
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            deleted = await client.call_tool(
+                "delete_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "created_document_123",
+                },
+            )
+            shared = await client.call_tool(
+                "share_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "created_document_123",
+                    "audience": "reviewer@brunova.mx",
+                },
+            )
+            return deleted, shared
+
+    deleted, shared = run(scenario())
+
+    assert deleted.is_error is True
+    assert "mutation_approval_required" in deleted.content[0].text
+    assert shared.is_error is True
+    assert "mutation_approval_required" in shared.content[0].text
+    assert gateway_runtime.workspace_adapter.deleted == []
+    assert gateway_runtime.workspace_adapter.shared == []
+
+
+def test_mcp_delete_and_share_protect_registered_source_root(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(
+        mcp_module,
+        "get_runtime_gateway",
+        lambda: gateway_runtime,
+    )
+    monkeypatch.setattr(mcp_module, "emit_audit_record", Mock())
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            deleted = await client.call_tool(
+                "delete_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "allowed_folder_123",
+                    "approval_reference": "decision-v015-test",
+                },
+            )
+            shared = await client.call_tool(
+                "share_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "allowed_folder_123",
+                    "audience": "reviewer@brunova.mx",
+                    "approval_reference": "decision-v015-test",
+                },
+            )
+            return deleted, shared
+
+    deleted, shared = run(scenario())
+
+    assert deleted.is_error is True
+    assert "mutation_source_root_protected" in deleted.content[0].text
+    assert shared.is_error is True
+    assert "mutation_source_root_protected" in shared.content[0].text
 
 
 def test_mcp_update_blocks_document_outside_selected_source(monkeypatch):
@@ -569,8 +728,8 @@ def test_mcp_lists_sources_and_filters_authorized_documents(monkeypatch):
         "create": True,
         "update": True,
         "move": True,
-        "delete": False,
-        "share": False,
+        "delete": True,
+        "share": True,
     }
     assert documents.is_error is False
     assert [item["name"] for item in documents.structured_content["documents"]] == [

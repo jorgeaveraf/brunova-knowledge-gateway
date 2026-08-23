@@ -172,3 +172,31 @@ def test_mutation_audit_contains_approval_but_not_change_content(monkeypatch):
     assert event["source_id"] == "brunova_template"
     assert "change" not in event
     assert "text" not in event
+
+
+def test_share_audit_contains_normalized_audience_without_permission_details(
+    monkeypatch,
+):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+
+    emit_audit_record(
+        request_id="share-request-123",
+        action="share_source_artifact",
+        resource_id="document_123456789",
+        resource_type="google_drive_artifact",
+        result="success",
+        http_status=200,
+        source_id="brunova_template",
+        source_classification="management_only",
+        approval_reference="decision-v015-test",
+        audience="reviewer@brunova.mx",
+    )
+
+    event = json.loads(log_info.call_args.args[0])
+    assert event["audience"] == "reviewer@brunova.mx"
+    assert event["approval_reference"] == "decision-v015-test"
+    assert "permission_id" not in event
+    assert "headers" not in event
+    assert "token" not in event

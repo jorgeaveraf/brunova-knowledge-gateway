@@ -20,7 +20,15 @@ def settings():
     )
 
 
-def policy(*, status="active", create=True, update=False, move=False):
+def policy(
+    *,
+    status="active",
+    create=True,
+    update=False,
+    move=False,
+    delete=False,
+    share=False,
+):
     source = SourceDefinition.model_validate(
         {
             "id": "safe_templates",
@@ -36,8 +44,8 @@ def policy(*, status="active", create=True, update=False, move=False):
                 "create": create,
                 "update": update,
                 "move": move,
-                "delete": False,
-                "share": False,
+                "delete": delete,
+                "share": share,
             },
         }
     )
@@ -98,3 +106,44 @@ def test_missing_approval_reference_is_blocked():
         )
 
     assert captured.value.code == "mutation_approval_required"
+
+
+@pytest.mark.parametrize(
+    ("operation", "capability"),
+    [
+        (MutationOperation.DELETE, "delete"),
+        (MutationOperation.SHARE, "share"),
+    ],
+)
+def test_delete_and_share_require_their_exact_capability(operation, capability):
+    allowed = policy(**{capability: True}).authorize(
+        source_id="safe_templates",
+        operation=operation,
+        approval_reference="decision-v015-test",
+    )
+
+    assert allowed.definition.id == "safe_templates"
+
+    with pytest.raises(WorkspaceAdapterError) as captured:
+        policy().authorize(
+            source_id="safe_templates",
+            operation=operation,
+            approval_reference="decision-v015-test",
+        )
+
+    assert captured.value.code == "source_capability_denied"
+
+
+@pytest.mark.parametrize("audience", ["", "not-an-email", "a@b@c.com"])
+def test_share_audience_must_be_one_explicit_email(audience):
+    with pytest.raises(WorkspaceAdapterError) as captured:
+        ContentMutationPolicy.validate_audience(audience)
+
+    assert captured.value.code == "mutation_audience_invalid"
+
+
+def test_share_audience_is_normalized():
+    assert (
+        ContentMutationPolicy.validate_audience("  REVIEWER@BRUNOVA.MX ")
+        == "reviewer@brunova.mx"
+    )

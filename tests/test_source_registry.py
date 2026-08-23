@@ -85,3 +85,20 @@ def test_capability_matrix_defaults_fail_closed_for_mutations(tmp_path):
     assert source.capabilities.move is False
     assert source.capabilities.delete is False
     assert source.capabilities.share is False
+
+
+def test_versioned_registry_enables_full_crud_only_for_approved_template():
+    registry = SourceRegistry.load("app/config/sources.yaml")
+
+    career_ops = registry.get("career_ops").capabilities
+    template = registry.get("brunova_template").capabilities
+
+    assert career_ops.model_dump() == {
+        "read": True,
+        "create": False,
+        "update": False,
+        "move": False,
+        "delete": False,
+        "share": False,
+    }
+    assert all(template.model_dump().values())

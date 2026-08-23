@@ -146,6 +146,7 @@ def test_cloud_logging_adapter_allowlists_fields_and_drops_sensitive_data():
                     "token": "must-not-escape",
                     "headers": {"authorization": "must-not-escape"},
                     "delegated_user": "private-user@example.com",
+                    "audience": "private-audience@example.com",
                 },
             }
         ]
@@ -179,6 +180,7 @@ def test_cloud_logging_adapter_allowlists_fields_and_drops_sensitive_data():
     assert "private document content" not in serialized
     assert "must-not-escape" not in serialized
     assert "private-user@example.com" not in serialized
+    assert "private-audience@example.com" not in serialized
     body = list_call.call_args.kwargs["body"]
     assert body["pageSize"] == 10
     assert 'jsonPayload.source_id="brunova_template"' in body["filter"]

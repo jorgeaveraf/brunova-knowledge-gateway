@@ -1,4 +1,4 @@
-"""Read-only access to Google Drive metadata."""
+"""Governed access to Google Drive metadata and source-scoped mutations."""
 
 from collections.abc import Callable
 from typing import Any
@@ -268,6 +268,62 @@ class GoogleWorkspaceAdapter:
                 ancestor_ids=(destination.id, *destination.ancestor_ids),
                 parent_ids=tuple(metadata.get("parents", [destination.id])),
             )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def delete_resource(self, *, resource: WorkspaceResource) -> WorkspaceResource:
+        """Move an authorized resource to Drive trash for recoverable deletion."""
+
+        try:
+            metadata = (
+                self._drive()
+                .files()
+                .update(
+                    fileId=resource.id,
+                    body={"trashed": True},
+                    fields="id,name,mimeType,modifiedTime,driveId,parents",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", resource.name),
+                mime_type=metadata.get("mimeType", resource.mime_type),
+                modified_time=metadata.get("modifiedTime", ""),
+                drive_id=metadata.get("driveId", resource.drive_id),
+                ancestor_ids=resource.ancestor_ids,
+                parent_ids=tuple(metadata.get("parents", resource.parent_ids)),
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def share_resource(
+        self,
+        *,
+        resource: WorkspaceResource,
+        audience: str,
+    ) -> WorkspaceResource:
+        """Grant reader access to one explicit audience; never publish publicly."""
+
+        try:
+            (
+                self._drive()
+                .permissions()
+                .create(
+                    fileId=resource.id,
+                    body={
+                        "type": "user",
+                        "role": "reader",
+                        "emailAddress": audience,
+                    },
+                    fields="id,type,role,emailAddress",
+                    sendNotificationEmail=False,
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return resource
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
 

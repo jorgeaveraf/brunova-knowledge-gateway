@@ -28,6 +28,7 @@ from app.operation_history import (
 from app.knowledge import (
     discover_candidate_sources,
     create_authorized_source_artifact,
+    delete_authorized_source_artifact,
     get_candidate_details,
     list_authorized_source_files,
     list_registered_sources,
@@ -38,6 +39,7 @@ from app.knowledge import (
     register_source_proposal,
     retrieve_authorized_document,
     retrieve_authorized_sheet_range,
+    share_authorized_source_artifact,
     update_authorized_source_artifact,
 )
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
@@ -96,10 +98,11 @@ class OperationHistoryToolResult(BaseModel):
 
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.14.0",
+    version="0.15.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
-        "execute capability-gated Google Workspace mutations with an external "
+        "execute full capability-gated Google Workspace CRUD operations with an "
+        "external "
         "approval reference. Safe operation history is available without direct "
         "log access. No tool approves sources or mutates Source Registry."
     ),
@@ -122,6 +125,7 @@ def _execute_tool(
     proposal_id: Callable[[T], str] | None = None,
     result_resource_id: Callable[[T], str] | None = None,
     approval_reference: str | None = None,
+    audience: str | None = None,
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
@@ -145,6 +149,7 @@ def _execute_tool(
             candidate_count=(candidate_count(result) if candidate_count else None),
             proposal_id=(proposal_id(result) if proposal_id else None),
             approval_reference=approval_reference,
+            audience=audience,
         )
         return result
     except WorkspaceAdapterError as error:
@@ -159,6 +164,7 @@ def _execute_tool(
             source_id=source_id,
             source_classification=source_classification,
             approval_reference=approval_reference,
+            audience=audience,
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
     except Exception:
@@ -173,6 +179,7 @@ def _execute_tool(
             source_id=source_id,
             source_classification=source_classification,
             approval_reference=approval_reference,
+            audience=audience,
         )
         raise
 
@@ -470,6 +477,73 @@ def move_source_artifact(
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference
         ),
+    )
+
+
+@mcp_server.tool()
+def delete_source_artifact(
+    source_id: str,
+    artifact_id: str,
+    ctx: Context,
+    approval_reference: str = "",
+) -> SourceMutationToolResult:
+    """Move an authorized source artifact to Drive trash."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="delete_source_artifact",
+        operation=lambda runtime, request_id: SourceMutationToolResult(
+            **delete_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                source_id=source_id,
+                artifact_id=artifact_id,
+                approval_reference=approval_reference,
+            ).model_dump(exclude={"request_id"}),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_id,
+        resource_type="google_drive_artifact",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+    )
+
+
+@mcp_server.tool()
+def share_source_artifact(
+    source_id: str,
+    artifact_id: str,
+    audience: str,
+    ctx: Context,
+    approval_reference: str = "",
+) -> SourceMutationToolResult:
+    """Grant reader access to one explicit audience for an authorized artifact."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="share_source_artifact",
+        operation=lambda runtime, request_id: SourceMutationToolResult(
+            **share_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                source_id=source_id,
+                artifact_id=artifact_id,
+                audience=audience,
+                approval_reference=approval_reference,
+            ).model_dump(exclude={"request_id"}),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_id,
+        resource_type="google_drive_artifact",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+        audience=ContentMutationPolicy.normalized_audience(audience),
     )
 
 

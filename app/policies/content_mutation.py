@@ -19,6 +19,10 @@ class MutationOperation(str, Enum):
 class ContentMutationPolicy:
     APPROVAL_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{2,127}$")
     RESOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+    AUDIENCE_PATTERN = re.compile(
+        r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@"
+        r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,187}[A-Za-z0-9])?$"
+    )
     MAX_NAME_LENGTH = 100
     MAX_CHANGE_LENGTH = 4000
 
@@ -100,3 +104,21 @@ class ContentMutationPolicy:
                 422,
             )
         return resource_id
+
+    @classmethod
+    def normalized_audience(cls, audience: str) -> str | None:
+        candidate = audience.strip().casefold()
+        if len(candidate) <= 254 and cls.AUDIENCE_PATTERN.fullmatch(candidate):
+            return candidate
+        return None
+
+    @classmethod
+    def validate_audience(cls, audience: str) -> str:
+        candidate = cls.normalized_audience(audience)
+        if candidate is None:
+            raise WorkspaceAdapterError(
+                "mutation_audience_invalid",
+                "Share audience must be one explicit email address.",
+                422,
+            )
+        return candidate

@@ -272,3 +272,88 @@ def test_move_resource_uses_explicit_parent_transition():
         fields="id,name,mimeType,modifiedTime,driveId,parents",
         supportsAllDrives=True,
     )
+
+
+def test_delete_resource_moves_artifact_to_trash():
+    update_request = Mock()
+    update_request.execute.return_value = {
+        "id": "document_12345",
+        "name": "Controlled Template",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": ["allowed_folder_123"],
+    }
+    files = Mock()
+    files.update.return_value = update_request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Controlled Template",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+        parent_ids=("allowed_folder_123",),
+    )
+
+    deleted = adapter.delete_resource(resource=resource)
+
+    assert deleted.id == "document_12345"
+    assert deleted.ancestor_ids == ("allowed_folder_123",)
+    files.update.assert_called_once_with(
+        fileId="document_12345",
+        body={"trashed": True},
+        fields="id,name,mimeType,modifiedTime,driveId,parents",
+        supportsAllDrives=True,
+    )
+
+
+def test_share_resource_grants_reader_to_one_explicit_user_without_notification():
+    permission_request = Mock()
+    permission_request.execute.return_value = {
+        "id": "permission_123",
+        "type": "user",
+        "role": "reader",
+        "emailAddress": "reviewer@brunova.mx",
+    }
+    permissions = Mock()
+    permissions.create.return_value = permission_request
+    drive = Mock()
+    drive.permissions.return_value = permissions
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Controlled Template",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+        parent_ids=("allowed_folder_123",),
+    )
+
+    shared = adapter.share_resource(
+        resource=resource,
+        audience="reviewer@brunova.mx",
+    )
+
+    assert shared == resource
+    permissions.create.assert_called_once_with(
+        fileId="document_12345",
+        body={
+            "type": "user",
+            "role": "reader",
+            "emailAddress": "reviewer@brunova.mx",
+        },
+        fields="id,type,role,emailAddress",
+        sendNotificationEmail=False,
+        supportsAllDrives=True,
+    )

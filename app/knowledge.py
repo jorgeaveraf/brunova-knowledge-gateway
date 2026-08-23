@@ -37,6 +37,12 @@ from app.source_registry import (
 
 SOURCE_CANDIDATE_LOOKUP_LIMIT = 100
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
+ARTIFACT_TYPES = {
+    "application/vnd.google-apps.document": "document",
+    "application/vnd.google-apps.spreadsheet": "spreadsheet",
+    "application/vnd.google-apps.presentation": "presentation",
+    "application/vnd.google-apps.folder": "folder",
+}
 
 
 def registered_source(registry: SourceRegistry, source_id: str) -> SourceDefinition:
@@ -214,6 +220,64 @@ def move_authorized_source_artifact(
     return _mutation_result(moved, allowed_source, status="moved")
 
 
+def delete_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    source_id: str,
+    artifact_id: str,
+    approval_reference: str,
+) -> SourceArtifactMutationResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.DELETE,
+        approval_reference=approval_reference,
+    )
+    safe_artifact_id = mutation_policy.validate_resource_id(artifact_id)
+    _protect_source_root(safe_artifact_id, allowed_source)
+    resource = workspace_adapter.get_resource(safe_artifact_id)
+    source_policy.authorize_resource_for_source(resource, allowed_source)
+    deleted = workspace_adapter.delete_resource(resource=resource)
+    return _mutation_result(deleted, allowed_source, status="deleted")
+
+
+def share_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    source_id: str,
+    artifact_id: str,
+    audience: str,
+    approval_reference: str,
+) -> SourceArtifactMutationResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.SHARE,
+        approval_reference=approval_reference,
+    )
+    safe_artifact_id = mutation_policy.validate_resource_id(artifact_id)
+    _protect_source_root(safe_artifact_id, allowed_source)
+    safe_audience = mutation_policy.validate_audience(audience)
+    resource = workspace_adapter.get_resource(safe_artifact_id)
+    source_policy.authorize_resource_for_source(resource, allowed_source)
+    shared = workspace_adapter.share_resource(
+        resource=resource,
+        audience=safe_audience,
+    )
+    return _mutation_result(shared, allowed_source, status="shared")
+
+
+def _protect_source_root(resource_id, source) -> None:
+    if resource_id == source.definition.location_id:
+        raise WorkspaceAdapterError(
+            "mutation_source_root_protected",
+            "The registered source root cannot be deleted or shared as an artifact.",
+            403,
+        )
+
+
 def _mutation_result(
     resource,
     source,
@@ -224,7 +288,7 @@ def _mutation_result(
         artifact=SourceArtifact(
             id=resource.id,
             name=resource.name,
-            type="document",
+            type=ARTIFACT_TYPES.get(resource.mime_type, "file"),
         ),
         source=SourceMetadata(
             id=source.context.source_id,

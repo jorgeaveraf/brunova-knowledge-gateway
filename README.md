@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.14:
+Arquitectura v0.15:
 
 Agents
 ↓
@@ -109,8 +109,9 @@ Endpoints:
 
 La lectura de metadata pasa por `DriveReadPolicy`; la lectura de contenido pasa
 por `ContentReadPolicy`. Las mutaciones no se exponen como endpoints REST ni
-como APIs crudas de Google: solo existen como tools MCP gobernados. No existen
-operaciones de borrado, permisos, ownership, publicación o compartición.
+como APIs crudas de Google: solo existen como tools MCP gobernados. No existe
+modificación de ownership, publicación pública ni administración arbitraria de
+permisos.
 
 ## Source Registry y clasificación
 
@@ -274,7 +275,7 @@ mutación requiere simultáneamente:
 
 - `source_id` presente en el Source Registry versionado;
 - fuente activa y no bloqueada;
-- capability exacta habilitada (`create`, `update` o `move`);
+- capability exacta habilitada (`create`, `update`, `move`, `delete` o `share`);
 - `approval_reference` externa, con formato seguro;
 - pertenencia source-scoped del artefacto y, para move, del destino.
 
@@ -286,12 +287,20 @@ Las operaciones soportadas están deliberadamente acotadas:
 
 - crear un Google Doc nativo vacío en la raíz de la fuente;
 - anexar hasta 4,000 caracteres a un Google Doc perteneciente a la fuente;
-- mover un Google Doc entre carpetas pertenecientes a la misma fuente.
+- mover un Google Doc entre carpetas pertenecientes a la misma fuente;
+- enviar un artefacto source-scoped a la papelera recuperable de Drive;
+- conceder acceso `reader` a una dirección de correo explícita sobre un
+  artefacto source-scoped, sin crear enlaces públicos ni enviar notificación.
+
+El root registrado de una fuente no puede eliminarse ni compartirse como si
+fuera un artefacto contenido.
 
 No hay update arbitrario de Drive, reemplazo completo de documentos, escritura
-de Sheets, movimiento entre fuentes, delete, share, ownership ni modificación
-automática del Source Registry. El contenido enviado en `change` nunca se
-registra en auditoría.
+de Sheets, movimiento entre fuentes, eliminación permanente, ownership,
+publicación pública ni modificación automática del Source Registry. El
+contenido enviado en `change` nunca se registra en auditoría. La audiencia
+normalizada de share se conserva en la auditoría interna, pero se excluye de
+`get_operation_history`.
 
 ## MCP
 
@@ -304,8 +313,9 @@ Tools disponibles:
 
 - `list_sources`: metadata no sensible del registry;
 - `get_operation_history`: historial seguro de `create_source_artifact`,
-  `update_source_artifact` y `move_source_artifact`, filtrable por fuente u
-  operación y limitado a 50 resultados;
+  `update_source_artifact`, `move_source_artifact`, `delete_source_artifact` y
+  `share_source_artifact`, filtrable por fuente u operación y limitado a 50
+  resultados;
 - `discover_source_candidates`: propone Shared Drives y carpetas raíz no
   registradas, sin ejecutar cambios;
 - `get_source_candidate_details`: devuelve detalle seguro de un candidato por
@@ -320,6 +330,10 @@ Tools disponibles:
   capability `update`;
 - `move_source_artifact`: mueve un Doc únicamente dentro de la misma fuente con
   capability `move`;
+- `delete_source_artifact`: envía un artefacto autorizado a la papelera de
+  Drive con capability `delete`;
+- `share_source_artifact`: concede acceso `reader` a una audiencia de correo
+  explícita con capability `share`;
 - `list_source_documents`: documentos autorizados de una fuente, con filtro
   opcional por nombre;
 - `retrieve_document`: lectura source-scoped de Google Docs;
@@ -328,7 +342,7 @@ Tools disponibles:
 Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
-propagan como tool errors legibles. Solo los tres tools de mutación anteriores
+propagan como tool errors legibles. Solo los cinco tools de mutación anteriores
 escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
 herramientas de proposals solo persisten o consultan intenciones pendientes.
 
@@ -339,7 +353,7 @@ mediante un adapter read-only y ADC de Cloud Run. No ofrece acceso general a
 Cloud Logging ni una ruta administrativa paralela. La consulta acepta:
 
 - `source_id` opcional, que debe existir y continuar autorizado;
-- `operation` opcional, restringida a las tres mutaciones gobernadas;
+- `operation` opcional, restringida a las cinco mutaciones gobernadas;
 - `limit`, entre 1 y 50, con valor predeterminado 10.
 
 Ejemplo de resultado MCP:
