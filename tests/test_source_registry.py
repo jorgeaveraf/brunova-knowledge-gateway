@@ -92,6 +92,7 @@ def test_versioned_registry_enables_full_crud_only_for_approved_template():
 
     career_ops = registry.get("career_ops").capabilities
     template = registry.get("brunova_template").capabilities
+    brunova_management = registry.get("brunova_management").capabilities
 
     assert career_ops.model_dump() == {
         "read": True,
@@ -102,3 +103,11 @@ def test_versioned_registry_enables_full_crud_only_for_approved_template():
         "share": False,
     }
     assert all(template.model_dump().values())
+    assert brunova_management.model_dump() == {
+        "read": True,
+        "create": False,
+        "update": False,
+        "move": False,
+        "delete": False,
+        "share": False,
+    }

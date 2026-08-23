@@ -33,3 +33,20 @@ sources:
       move: true
       delete: true
       share: true
+  - id: brunova_management
+    name: 00 Brunova
+    system: google_workspace
+    location_type: folder
+    location_id: 1Bhz7_2gyPblt3ERscj4TkLTa-7ZDAdsr
+    classification: management_only
+    owner:
+      - Jorge
+      - Nat
+    status: active
+    capabilities:
+      read: true
+      create: false
+      update: false
+      move: false
+      delete: false
+      share: false
