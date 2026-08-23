@@ -10,6 +10,7 @@ sources:
       - Jorge
       - Nat
     status: active
+    source_type: knowledge_source
     capabilities:
       read: true
       create: false
@@ -17,6 +18,7 @@ sources:
       move: false
       delete: false
       share: false
+      convert: false
   - id: brunova_template
     name: Brunova Template
     system: google_workspace
@@ -26,6 +28,7 @@ sources:
     owner:
       - Jorge
     status: active
+    source_type: knowledge_source
     capabilities:
       read: true
       create: true
@@ -33,6 +36,7 @@ sources:
       move: true
       delete: true
       share: true
+      convert: true
   - id: brunova_management
     name: 00 Brunova
     system: google_workspace
@@ -43,6 +47,7 @@ sources:
       - Jorge
       - Nat
     status: active
+    source_type: knowledge_source
     capabilities:
       read: true
       create: false
@@ -50,3 +55,4 @@ sources:
       move: false
       delete: false
       share: false
+      convert: false

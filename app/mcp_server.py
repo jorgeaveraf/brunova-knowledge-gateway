@@ -12,6 +12,8 @@ from pydantic import BaseModel
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import (
+    ArtifactConversionResult,
+    ArtifactConversionTarget,
     ArtifactMetadata,
     DriveFile,
     GoogleDocContent,
@@ -29,6 +31,7 @@ from app.operation_history import (
 from app.knowledge import (
     discover_candidate_sources,
     create_authorized_source_artifact,
+    convert_authorized_source_artifact,
     delete_authorized_source_artifact,
     get_candidate_details,
     inspect_authorized_source_artifacts,
@@ -98,6 +101,10 @@ class SourceMutationToolResult(SourceArtifactMutationResult):
     request_id: str
 
 
+class ArtifactConversionToolResult(ArtifactConversionResult):
+    request_id: str
+
+
 class OperationHistoryToolResult(BaseModel):
     operations: list[OperationHistoryEntry]
     request_id: str
@@ -105,7 +112,7 @@ class OperationHistoryToolResult(BaseModel):
 
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.16.0",
+    version="0.17.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
         "execute full capability-gated Google Workspace CRUD operations with an "
@@ -131,8 +138,10 @@ def _execute_tool(
     candidate_count: Callable[[T], int] | None = None,
     proposal_id: Callable[[T], str] | None = None,
     result_resource_id: Callable[[T], str] | None = None,
+    created_resource_id: Callable[[T], str] | None = None,
     approval_reference: str | None = None,
     audience: str | None = None,
+    destination_source_id: str | None = None,
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
@@ -157,6 +166,10 @@ def _execute_tool(
             proposal_id=(proposal_id(result) if proposal_id else None),
             approval_reference=approval_reference,
             audience=audience,
+            created_resource_id=(
+                created_resource_id(result) if created_resource_id else None
+            ),
+            destination_source_id=destination_source_id,
         )
         return result
     except WorkspaceAdapterError as error:
@@ -172,6 +185,7 @@ def _execute_tool(
             source_classification=source_classification,
             approval_reference=approval_reference,
             audience=audience,
+            destination_source_id=destination_source_id,
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
     except Exception:
@@ -187,6 +201,7 @@ def _execute_tool(
             source_classification=source_classification,
             approval_reference=approval_reference,
             audience=audience,
+            destination_source_id=destination_source_id,
         )
         raise
 
@@ -457,11 +472,12 @@ def update_source_artifact(
 def move_source_artifact(
     source_id: str,
     artifact_id: str,
-    destination_folder_id: str,
     ctx: Context,
+    destination_folder_id: str | None = None,
     approval_reference: str = "",
+    destination_source_id: str | None = None,
 ) -> SourceMutationToolResult:
-    """Move an authorized Google Doc to a folder within the same source."""
+    """Move an artifact within its source or to an approved archive destination."""
 
     return _execute_tool(
         ctx=ctx,
@@ -474,13 +490,50 @@ def move_source_artifact(
                 source_id=source_id,
                 artifact_id=artifact_id,
                 destination_folder_id=destination_folder_id,
+                destination_source_id=destination_source_id,
                 approval_reference=approval_reference,
             ).model_dump(exclude={"request_id"}),
             request_id=request_id,
         ),
         source_id=source_id,
         resource_id=artifact_id,
-        resource_type="google_document",
+        resource_type="google_drive_artifact",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+        destination_source_id=destination_source_id,
+    )
+
+
+@mcp_server.tool()
+def convert_source_artifact(
+    source_id: str,
+    artifact_id: str,
+    target_type: ArtifactConversionTarget,
+    ctx: Context,
+    approval_reference: str = "",
+) -> ArtifactConversionToolResult:
+    """Convert a supported Office artifact using native Google Drive import."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="convert_source_artifact",
+        operation=lambda runtime, request_id: ArtifactConversionToolResult(
+            **convert_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                source_id=source_id,
+                artifact_id=artifact_id,
+                target_type=target_type,
+                approval_reference=approval_reference,
+            ).model_dump(exclude={"request_id"}),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_id,
+        resource_type="office_artifact",
+        created_resource_id=lambda result: result.created_artifact.id,
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference
         ),

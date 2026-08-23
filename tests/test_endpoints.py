@@ -295,6 +295,7 @@ def test_sources_list_returns_only_safe_registry_metadata():
             "system": "google_workspace",
             "classification": "management_only",
             "status": "active",
+            "source_type": "knowledge_source",
             "capabilities": {
                 "read": True,
                 "create": False,
@@ -302,6 +303,7 @@ def test_sources_list_returns_only_safe_registry_metadata():
                 "move": False,
                 "delete": False,
                 "share": False,
+                "convert": False,
             },
         }
     ]
@@ -329,6 +331,7 @@ def test_source_detail_returns_safe_metadata_and_missing_source_is_404():
         "move": False,
         "delete": False,
         "share": False,
+        "convert": False,
     }
     assert "location_id" not in response.text
     assert "owner" not in response.text

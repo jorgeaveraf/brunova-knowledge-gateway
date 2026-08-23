@@ -5,7 +5,7 @@ from enum import Enum
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.policies.source_access import AllowedSource, SourceAccessPolicy
-from app.source_registry import SourceRegistry
+from app.source_registry import SourceRegistry, SourceType
 
 
 class MutationOperation(str, Enum):
@@ -14,6 +14,7 @@ class MutationOperation(str, Enum):
     MOVE = "move"
     DELETE = "delete"
     SHARE = "share"
+    CONVERT = "convert"
 
 
 class ContentMutationPolicy:
@@ -63,6 +64,33 @@ class ContentMutationPolicy:
             raise WorkspaceAdapterError(
                 "source_capability_denied",
                 "The selected source does not allow the requested mutation.",
+                403,
+            )
+        return allowed_source
+
+    def authorize_archive_destination(self, source_id: str) -> AllowedSource:
+        try:
+            source = self._registry.get(source_id)
+        except KeyError as error:
+            raise WorkspaceAdapterError(
+                "archive_destination_not_found",
+                "The requested archive destination is not registered.",
+                404,
+            ) from error
+        if source.source_type != SourceType.ARCHIVE_DESTINATION:
+            raise WorkspaceAdapterError(
+                "archive_destination_invalid",
+                "The requested destination is not an approved archive destination.",
+                403,
+            )
+        allowed_source = self._source_access_policy.authorize_source(
+            source,
+            require_read=False,
+        )
+        if not source.capabilities.move:
+            raise WorkspaceAdapterError(
+                "source_capability_denied",
+                "The archive destination does not allow governed moves.",
                 403,
             )
         return allowed_source

@@ -4,6 +4,8 @@ from app.adapters.google_workspace.docs import GoogleDocsAdapter
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import (
+    ArtifactConversionResult,
+    ArtifactConversionTarget,
     ArtifactMetadata,
     DriveFile,
     GoogleDocContent,
@@ -43,6 +45,31 @@ ARTIFACT_TYPES = {
     "application/vnd.google-apps.spreadsheet": "spreadsheet",
     "application/vnd.google-apps.presentation": "presentation",
     "application/vnd.google-apps.folder": "folder",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+}
+CONVERSION_TARGET_MIME_TYPES = {
+    ArtifactConversionTarget.GOOGLE_DOCUMENT: "application/vnd.google-apps.document",
+    ArtifactConversionTarget.GOOGLE_SHEET: "application/vnd.google-apps.spreadsheet",
+    ArtifactConversionTarget.GOOGLE_PRESENTATION: (
+        "application/vnd.google-apps.presentation"
+    ),
+}
+OFFICE_CONVERSION_TARGETS = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (
+        ArtifactConversionTarget.GOOGLE_SHEET
+    ),
+    "application/vnd.ms-excel.sheet.macroenabled.12": (
+        ArtifactConversionTarget.GOOGLE_SHEET
+    ),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        ArtifactConversionTarget.GOOGLE_DOCUMENT
+    ),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        ArtifactConversionTarget.GOOGLE_PRESENTATION
+    ),
 }
 
 
@@ -194,7 +221,8 @@ def move_authorized_source_artifact(
     workspace_adapter: GoogleWorkspaceAdapter,
     source_id: str,
     artifact_id: str,
-    destination_folder_id: str,
+    destination_folder_id: str | None,
+    destination_source_id: str | None,
     approval_reference: str,
 ) -> SourceArtifactMutationResult:
     allowed_source = mutation_policy.authorize(
@@ -203,15 +231,31 @@ def move_authorized_source_artifact(
         approval_reference=approval_reference,
     )
     safe_artifact_id = mutation_policy.validate_resource_id(artifact_id)
-    safe_destination_id = mutation_policy.validate_resource_id(destination_folder_id)
     resource = workspace_adapter.get_resource(safe_artifact_id)
-    destination = workspace_adapter.get_resource(safe_destination_id)
     source_policy.authorize_resource_for_source(resource, allowed_source)
-    source_policy.authorize_resource_for_source(destination, allowed_source)
-    if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+    if destination_source_id:
+        if destination_folder_id:
+            raise WorkspaceAdapterError(
+                "mutation_destination_invalid",
+                "Specify either a source folder or an archive destination, not both.",
+                422,
+            )
+        archive_source = mutation_policy.authorize_archive_destination(
+            destination_source_id
+        )
+        destination = workspace_adapter.get_resource(
+            archive_source.definition.location_id
+        )
+    elif destination_folder_id:
+        safe_destination_id = mutation_policy.validate_resource_id(
+            destination_folder_id
+        )
+        destination = workspace_adapter.get_resource(safe_destination_id)
+        source_policy.authorize_resource_for_source(destination, allowed_source)
+    else:
         raise WorkspaceAdapterError(
-            "resource_type_invalid",
-            "Only native Google Docs can be moved by this Gateway.",
+            "mutation_destination_invalid",
+            "A destination folder or approved archive destination is required.",
             422,
         )
     moved = workspace_adapter.move_resource(
@@ -219,6 +263,71 @@ def move_authorized_source_artifact(
         destination=destination,
     )
     return _mutation_result(moved, allowed_source, status="moved")
+
+
+def convert_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    source_id: str,
+    artifact_id: str,
+    target_type: ArtifactConversionTarget,
+    approval_reference: str,
+) -> ArtifactConversionResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.CONVERT,
+        approval_reference=approval_reference,
+    )
+    safe_artifact_id = mutation_policy.validate_resource_id(artifact_id)
+    resource = workspace_adapter.get_resource(safe_artifact_id)
+    source_policy.authorize_resource_for_source(resource, allowed_source)
+    normalized_mime_type = resource.mime_type.casefold()
+    expected_target = OFFICE_CONVERSION_TARGETS.get(normalized_mime_type)
+    if expected_target is None:
+        raise WorkspaceAdapterError(
+            "conversion_source_type_invalid",
+            "Only supported Office artifacts can be converted.",
+            422,
+        )
+    if target_type != expected_target:
+        raise WorkspaceAdapterError(
+            "conversion_target_invalid",
+            "The requested Google-native target is incompatible with this artifact.",
+            422,
+        )
+    original_type = ARTIFACT_TYPES[normalized_mime_type]
+    suffix = f".{original_type}"
+    target_name = (
+        resource.name[: -len(suffix)]
+        if resource.name.casefold().endswith(suffix)
+        else resource.name
+    )
+    created = workspace_adapter.convert_resource(
+        resource=resource,
+        target_mime_type=CONVERSION_TARGET_MIME_TYPES[target_type],
+        target_name=target_name,
+    )
+    source_metadata = SourceMetadata(
+        id=allowed_source.context.source_id,
+        name=allowed_source.context.source_name,
+        classification=allowed_source.context.classification,
+    )
+    return ArtifactConversionResult(
+        original_artifact=SourceArtifact(
+            id=resource.id,
+            name=resource.name,
+            type=original_type,
+        ),
+        created_artifact=SourceArtifact(
+            id=created.id,
+            name=created.name,
+            type=ARTIFACT_TYPES.get(created.mime_type.casefold(), "file"),
+        ),
+        created_artifact_type=target_type,
+        source=source_metadata,
+    )
 
 
 def delete_authorized_source_artifact(
@@ -289,7 +398,7 @@ def _mutation_result(
         artifact=SourceArtifact(
             id=resource.id,
             name=resource.name,
-            type=ARTIFACT_TYPES.get(resource.mime_type, "file"),
+            type=ARTIFACT_TYPES.get(resource.mime_type.casefold(), "file"),
         ),
         source=SourceMetadata(
             id=source.context.source_id,

@@ -28,6 +28,7 @@ def policy(
     move=False,
     delete=False,
     share=False,
+    convert=False,
 ):
     source = SourceDefinition.model_validate(
         {
@@ -46,6 +47,7 @@ def policy(
                 "move": move,
                 "delete": delete,
                 "share": share,
+                "convert": convert,
             },
         }
     )
@@ -113,9 +115,10 @@ def test_missing_approval_reference_is_blocked():
     [
         (MutationOperation.DELETE, "delete"),
         (MutationOperation.SHARE, "share"),
+        (MutationOperation.CONVERT, "convert"),
     ],
 )
-def test_delete_and_share_require_their_exact_capability(operation, capability):
+def test_mutations_require_their_exact_capability(operation, capability):
     allowed = policy(**{capability: True}).authorize(
         source_id="safe_templates",
         operation=operation,

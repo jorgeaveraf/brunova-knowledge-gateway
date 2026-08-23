@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel
@@ -86,7 +87,33 @@ class SheetRangeContent(BaseModel):
 class SourceArtifact(BaseModel):
     id: str
     name: str
-    type: Literal["document", "spreadsheet", "presentation", "folder", "file"]
+    type: Literal[
+        "document",
+        "spreadsheet",
+        "presentation",
+        "folder",
+        "file",
+        "xlsx",
+        "xlsm",
+        "docx",
+        "pptx",
+    ]
+
+
+class ArtifactConversionTarget(str, Enum):
+    GOOGLE_DOCUMENT = "google_document"
+    GOOGLE_SHEET = "google_sheet"
+    GOOGLE_PRESENTATION = "google_presentation"
+
+
+class ArtifactConversionResult(BaseModel):
+    operation: Literal["convert_source_artifact"] = "convert_source_artifact"
+    result: Literal["success"] = "success"
+    original_artifact: SourceArtifact
+    created_artifact: SourceArtifact
+    created_artifact_type: ArtifactConversionTarget
+    source: SourceMetadata
+    request_id: Optional[str] = None
 
 
 class SourceArtifactMutationResult(BaseModel):

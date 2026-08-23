@@ -20,6 +20,11 @@ class SourceStatus(str, Enum):
     DISABLED = "disabled"
 
 
+class SourceType(str, Enum):
+    KNOWLEDGE_SOURCE = "knowledge_source"
+    ARCHIVE_DESTINATION = "archive_destination"
+
+
 class SourceCapabilities(BaseModel):
     """Explicit operations approved for one versioned source."""
 
@@ -31,6 +36,7 @@ class SourceCapabilities(BaseModel):
     move: bool = False
     delete: bool = False
     share: bool = False
+    convert: bool = False
 
 
 class SourceDefinition(BaseModel):
@@ -44,6 +50,7 @@ class SourceDefinition(BaseModel):
     classification: Classification
     owners: tuple[str, ...] = Field(alias="owner", min_length=1)
     status: SourceStatus
+    source_type: SourceType = SourceType.KNOWLEDGE_SOURCE
     capabilities: SourceCapabilities = Field(default_factory=SourceCapabilities)
 
 
@@ -60,6 +67,7 @@ class SourceRegistryMetadata(BaseModel):
     system: Literal["google_workspace"]
     classification: Classification
     status: SourceStatus
+    source_type: SourceType
     capabilities: SourceCapabilities
 
     @classmethod
@@ -70,6 +78,7 @@ class SourceRegistryMetadata(BaseModel):
             system=source.system,
             classification=source.classification,
             status=source.status,
+            source_type=source.source_type,
             capabilities=source.capabilities,
         )
 

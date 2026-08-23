@@ -1,5 +1,6 @@
 from unittest.mock import Mock
 
+import app.adapters.google_workspace.drive as drive_module
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.models import WorkspaceResource
 from app.config.settings import Settings
@@ -280,6 +281,71 @@ def test_inspect_source_artifacts_detects_office_and_native_formats_safely():
         fields="files(name,mimeType,size,modifiedTime)",
         orderBy="modifiedTime desc",
     )
+
+
+def test_convert_resource_uses_drive_native_import_without_parsing(monkeypatch):
+    media_request = object()
+    downloader = Mock()
+    downloader.next_chunk.return_value = (None, True)
+    downloader_factory = Mock(return_value=downloader)
+    media_upload = object()
+    uploader_factory = Mock(return_value=media_upload)
+    monkeypatch.setattr(drive_module, "MediaIoBaseDownload", downloader_factory)
+    monkeypatch.setattr(drive_module, "MediaIoBaseUpload", uploader_factory)
+
+    create_request = Mock()
+    create_request.execute.return_value = {
+        "id": "converted_sheet_123",
+        "name": "Forecast",
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "modifiedTime": "2026-08-23T12:00:00Z",
+        "parents": ["allowed_folder_123"],
+    }
+    files = Mock()
+    files.get_media.return_value = media_request
+    files.create.return_value = create_request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    original = WorkspaceResource(
+        id="xlsx_artifact_123",
+        name="Forecast.xlsx",
+        mime_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        modified_time="2026-08-23T10:00:00Z",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+        parent_ids=("allowed_folder_123",),
+    )
+
+    result = adapter.convert_resource(
+        resource=original,
+        target_mime_type="application/vnd.google-apps.spreadsheet",
+        target_name="Forecast",
+    )
+
+    assert result.id == "converted_sheet_123"
+    assert result.mime_type == "application/vnd.google-apps.spreadsheet"
+    files.get_media.assert_called_once_with(
+        fileId="xlsx_artifact_123",
+        supportsAllDrives=True,
+    )
+    files.create.assert_called_once_with(
+        body={
+            "name": "Forecast",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+            "parents": ["allowed_folder_123"],
+        },
+        media_body=media_upload,
+        fields="id,name,mimeType,modifiedTime,driveId,parents",
+        supportsAllDrives=True,
+    )
+    uploader_factory.assert_called_once()
 
 
 def test_discovery_detects_unregistered_shared_drives_and_root_folders():

@@ -43,7 +43,7 @@ def settings():
     )
 
 
-def registry(*, mutation_enabled=True):
+def registry(*, mutation_enabled=True, include_archive=False):
     source = SourceDefinition.model_validate(
         {
             "id": "career_ops",
@@ -61,10 +61,29 @@ def registry(*, mutation_enabled=True):
                 "move": mutation_enabled,
                 "delete": mutation_enabled,
                 "share": mutation_enabled,
+                "convert": mutation_enabled,
             },
         }
     )
-    return SourceRegistry(SourceRegistryDocument(version=1, sources=(source,)))
+    sources = [source]
+    if include_archive:
+        sources.append(
+            SourceDefinition.model_validate(
+                {
+                    "id": "legacy_archive",
+                    "name": "98 Legacy",
+                    "system": "google_workspace",
+                    "location_type": "folder",
+                    "location_id": "archive_folder_123",
+                    "classification": "management_only",
+                    "owner": ["Management"],
+                    "status": "active",
+                    "source_type": "archive_destination",
+                    "capabilities": {"read": False, "move": True},
+                }
+            )
+        )
+    return SourceRegistry(SourceRegistryDocument(version=1, sources=tuple(sources)))
 
 
 class FakeWorkspaceAdapter:
@@ -74,6 +93,7 @@ class FakeWorkspaceAdapter:
         self.moved = []
         self.deleted = []
         self.shared = []
+        self.converted = []
 
     def list_source_files(self, *, source, limit, source_policy):
         assert source.definition.id == "career_ops"
@@ -117,17 +137,39 @@ class FakeWorkspaceAdapter:
         ]
 
     def get_resource(self, resource_id):
-        is_destination = resource_id == "destination_folder_123"
+        is_destination = resource_id in (
+            "destination_folder_123",
+            "archive_folder_123",
+        )
+        office_mime_type = None
+        if resource_id.startswith("xlsx"):
+            office_mime_type = (
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            )
+        elif resource_id.startswith("xlsm"):
+            office_mime_type = "application/vnd.ms-excel.sheet.macroEnabled.12"
         return WorkspaceResource(
             id=resource_id,
-            name="Controlled resource",
+            name=(
+                "Controlled workbook.xlsx"
+                if resource_id.startswith("xlsx")
+                else (
+                    "Controlled workbook.xlsm"
+                    if resource_id.startswith("xlsm")
+                    else "Controlled resource"
+                )
+            ),
             mime_type=(
                 "application/vnd.google-apps.folder"
                 if is_destination
                 else (
-                    "application/vnd.google-apps.spreadsheet"
-                    if resource_id.startswith("spreadsheet")
-                    else "application/vnd.google-apps.document"
+                    office_mime_type
+                    or (
+                        "application/vnd.google-apps.spreadsheet"
+                        if resource_id.startswith("spreadsheet")
+                        else "application/vnd.google-apps.document"
+                    )
                 )
             ),
             modified_time="2026-08-22T00:00:00Z",
@@ -171,6 +213,18 @@ class FakeWorkspaceAdapter:
     def share_resource(self, *, resource, audience):
         self.shared.append((resource.id, audience))
         return resource
+
+    def convert_resource(self, *, resource, target_mime_type, target_name):
+        self.converted.append((resource.id, target_mime_type, target_name))
+        return WorkspaceResource(
+            id=f"converted_{resource.id}",
+            name=target_name,
+            mime_type=target_mime_type,
+            modified_time="2026-08-23T12:00:00Z",
+            drive_id=None,
+            ancestor_ids=resource.ancestor_ids,
+            parent_ids=resource.parent_ids,
+        )
 
 
 class FakeDocsAdapter:
@@ -251,8 +305,11 @@ class MemoryObjectBackend:
         self.generation += 1
 
 
-def runtime(*, in_source=True, mutation_enabled=True):
-    source_registry = registry(mutation_enabled=mutation_enabled)
+def runtime(*, in_source=True, mutation_enabled=True, include_archive=False):
+    source_registry = registry(
+        mutation_enabled=mutation_enabled,
+        include_archive=include_archive,
+    )
     runtime_settings = settings()
     source_policy = SourceAccessPolicy(runtime_settings, source_registry)
     return KnowledgeRuntime(
@@ -272,7 +329,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_sixteen_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_seventeen_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -298,6 +355,7 @@ def test_mcp_exposes_only_the_sixteen_governed_tools(monkeypatch):
         "delete_source_artifact",
         "share_source_artifact",
         "inspect_source_artifacts",
+        "convert_source_artifact",
     }
 
 
@@ -584,6 +642,154 @@ def test_mcp_governed_mutations_require_capabilities_scope_and_approval(monkeypa
     assert mutation_audits[-1].kwargs["audience"] == "reviewer@brunova.mx"
 
 
+def test_mcp_converts_xlsx_and_xlsm_then_moves_original_with_full_audit(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            xlsx = await client.call_tool(
+                "convert_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "xlsx_artifact_123",
+                    "target_type": "google_sheet",
+                    "approval_reference": "decision-v017-convert",
+                },
+            )
+            xlsm = await client.call_tool(
+                "convert_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "xlsm_artifact_123",
+                    "target_type": "google_sheet",
+                    "approval_reference": "decision-v017-convert",
+                },
+            )
+            moved = await client.call_tool(
+                "move_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "xlsx_artifact_123",
+                    "destination_folder_id": "destination_folder_123",
+                    "approval_reference": "decision-v017-archive",
+                },
+            )
+            return xlsx, xlsm, moved
+
+    xlsx, xlsm, moved = run(scenario())
+
+    assert xlsx.is_error is False
+    assert xlsx.structured_content["original_artifact"]["type"] == "xlsx"
+    assert xlsx.structured_content["created_artifact"]["type"] == "spreadsheet"
+    assert xlsx.structured_content["created_artifact_type"] == "google_sheet"
+    assert xlsm.is_error is False
+    assert xlsm.structured_content["original_artifact"]["type"] == "xlsm"
+    assert moved.is_error is False
+    assert gateway_runtime.workspace_adapter.converted == [
+        (
+            "xlsx_artifact_123",
+            "application/vnd.google-apps.spreadsheet",
+            "Controlled workbook",
+        ),
+        (
+            "xlsm_artifact_123",
+            "application/vnd.google-apps.spreadsheet",
+            "Controlled workbook",
+        ),
+    ]
+    lifecycle_audits = audit.call_args_list[-3:]
+    assert [call.kwargs["action"] for call in lifecycle_audits] == [
+        "convert_source_artifact",
+        "convert_source_artifact",
+        "move_source_artifact",
+    ]
+    assert lifecycle_audits[0].kwargs["resource_id"] == "xlsx_artifact_123"
+    assert lifecycle_audits[0].kwargs["created_resource_id"] == (
+        "converted_xlsx_artifact_123"
+    )
+    assert all("content" not in call.kwargs for call in lifecycle_audits)
+
+
+def test_mcp_conversion_rejects_missing_approval_unknown_source_and_scope(monkeypatch):
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        gateway_runtime = runtime()
+        monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+        async with Client(mcp_module.mcp_server) as client:
+            missing_approval = await client.call_tool(
+                "convert_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "xlsx_artifact_123",
+                    "target_type": "google_sheet",
+                },
+            )
+            unknown_source = await client.call_tool(
+                "convert_source_artifact",
+                {
+                    "source_id": "unknown_source",
+                    "artifact_id": "xlsx_artifact_123",
+                    "target_type": "google_sheet",
+                    "approval_reference": "decision-v017-convert",
+                },
+            )
+        outside_runtime = runtime(in_source=False)
+        monkeypatch.setattr(
+            mcp_module,
+            "get_runtime_gateway",
+            lambda: outside_runtime,
+        )
+        async with Client(mcp_module.mcp_server) as client:
+            outside_scope = await client.call_tool(
+                "convert_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "xlsx_artifact_123",
+                    "target_type": "google_sheet",
+                    "approval_reference": "decision-v017-convert",
+                },
+            )
+        return missing_approval, unknown_source, outside_scope
+
+    missing_approval, unknown_source, outside_scope = run(scenario())
+
+    assert "mutation_approval_required" in missing_approval.content[0].text
+    assert "source_not_found" in unknown_source.content[0].text
+    assert "resource_not_in_source" in outside_scope.content[0].text
+
+
+def test_mcp_moves_office_original_to_explicit_archive_destination(monkeypatch):
+    gateway_runtime = runtime(include_archive=True)
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "move_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_id": "xlsm_artifact_123",
+                    "destination_source_id": "legacy_archive",
+                    "approval_reference": "decision-v017-archive",
+                },
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is False
+    assert gateway_runtime.workspace_adapter.moved == [
+        ("xlsm_artifact_123", "archive_folder_123")
+    ]
+    assert audit.call_args.kwargs["destination_source_id"] == "legacy_archive"
+
+
 def test_mcp_mutation_blocks_missing_approval_and_capability(monkeypatch):
     audit = Mock()
     monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
@@ -797,6 +1003,7 @@ def test_mcp_lists_sources_and_filters_authorized_documents(monkeypatch):
         "move": True,
         "delete": True,
         "share": True,
+        "convert": True,
     }
     assert documents.is_error is False
     assert [item["name"] for item in documents.structured_content["documents"]] == [

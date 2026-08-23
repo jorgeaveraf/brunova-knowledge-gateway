@@ -1,11 +1,13 @@
 """Governed access to Google Drive metadata and source-scoped mutations."""
 
 from collections.abc import Callable
+from tempfile import SpooledTemporaryFile
 from typing import Any
 
 from google.auth.exceptions import GoogleAuthError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
@@ -328,6 +330,58 @@ class GoogleWorkspaceAdapter:
                 drive_id=metadata.get("driveId", resource.drive_id),
                 ancestor_ids=(destination.id, *destination.ancestor_ids),
                 parent_ids=tuple(metadata.get("parents", [destination.id])),
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def convert_resource(
+        self,
+        *,
+        resource: WorkspaceResource,
+        target_mime_type: str,
+        target_name: str,
+    ) -> WorkspaceResource:
+        """Import an Office artifact as a new native Google Workspace artifact."""
+
+        try:
+            drive = self._drive()
+            media_request = drive.files().get_media(
+                fileId=resource.id,
+                supportsAllDrives=True,
+            )
+            with SpooledTemporaryFile(max_size=5 * 1024 * 1024) as media_stream:
+                downloader = MediaIoBaseDownload(media_stream, media_request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                media_stream.seek(0)
+                media = MediaIoBaseUpload(
+                    media_stream,
+                    mimetype=resource.mime_type,
+                    resumable=True,
+                )
+                metadata = (
+                    drive.files()
+                    .create(
+                        body={
+                            "name": target_name,
+                            "mimeType": target_mime_type,
+                            "parents": list(resource.parent_ids),
+                        },
+                        media_body=media,
+                        fields="id,name,mimeType,modifiedTime,driveId,parents",
+                        supportsAllDrives=True,
+                    )
+                    .execute()
+                )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", target_name),
+                mime_type=metadata.get("mimeType", target_mime_type),
+                modified_time=metadata.get("modifiedTime", ""),
+                drive_id=metadata.get("driveId", resource.drive_id),
+                ancestor_ids=resource.ancestor_ids,
+                parent_ids=tuple(metadata.get("parents", resource.parent_ids)),
             )
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error

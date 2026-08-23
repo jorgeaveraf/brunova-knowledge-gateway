@@ -7,7 +7,12 @@ from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import WorkspaceResource
 from app.config.settings import Settings
 from app.policies.classification import ClassificationPolicy, SourceContext
-from app.source_registry import SourceDefinition, SourceRegistry, SourceStatus
+from app.source_registry import (
+    SourceDefinition,
+    SourceRegistry,
+    SourceStatus,
+    SourceType,
+)
 
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
 
@@ -35,6 +40,7 @@ class SourceAccessPolicy:
         for source in self._registry.sources:
             if (
                 source.status == SourceStatus.ACTIVE
+                and source.source_type == SourceType.KNOWLEDGE_SOURCE
                 and source.capabilities.read
                 and source.location_id not in self._blocked
             ):
@@ -77,6 +83,12 @@ class SourceAccessPolicy:
             raise self._not_allowed() from error
         if registered_source != source or source.location_id in self._blocked:
             raise self._not_allowed()
+        if require_read and source.source_type != SourceType.KNOWLEDGE_SOURCE:
+            raise WorkspaceAdapterError(
+                "source_not_readable",
+                "Archive destinations cannot be used as knowledge sources.",
+                403,
+            )
         if require_read and not source.capabilities.read:
             raise WorkspaceAdapterError(
                 "source_capability_denied",
@@ -99,7 +111,10 @@ class SourceAccessPolicy:
         if resource_locations & self._blocked:
             raise self._not_allowed()
         for source in self._registry.sources:
-            if source.location_id in resource_locations:
+            if (
+                source.source_type == SourceType.KNOWLEDGE_SOURCE
+                and source.location_id in resource_locations
+            ):
                 return ClassificationPolicy.apply(source)
         raise self._not_allowed()
 

@@ -98,6 +98,8 @@ def emit_audit_record(
     proposal_id: str | None = None,
     approval_reference: str | None = None,
     audience: str | None = None,
+    created_resource_id: str | None = None,
+    destination_source_id: str | None = None,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -133,6 +135,10 @@ def emit_audit_record(
         event["approval_reference"] = approval_reference
     if audience:
         event["audience"] = audience
+    if created_resource_id:
+        event["created_resource_id"] = created_resource_id
+    if destination_source_id:
+        event["destination_source_id"] = destination_source_id
     if error_code:
         event["error_code"] = error_code
     audit_logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))

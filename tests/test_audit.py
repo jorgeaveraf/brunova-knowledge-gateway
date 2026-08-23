@@ -102,6 +102,32 @@ def test_audit_event_contains_metadata_but_no_content(monkeypatch):
     assert "owner" not in event
 
 
+def test_conversion_audit_tracks_lifecycle_ids_without_content(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+
+    emit_audit_record(
+        request_id="request-v017",
+        action="convert_source_artifact",
+        resource_id="office_artifact_123",
+        created_resource_id="google_sheet_123",
+        resource_type="office_artifact",
+        result="success",
+        http_status=200,
+        source_id="career_ops",
+        source_classification="management_only",
+        approval_reference="decision-v017-convert",
+    )
+
+    event = json.loads(log_info.call_args.args[0])
+    assert event["resource_id"] == "office_artifact_123"
+    assert event["created_resource_id"] == "google_sheet_123"
+    assert event["approval_reference"] == "decision-v017-convert"
+    assert "content" not in event
+    assert "token" not in event
+
+
 def test_discovery_audit_contains_count_without_candidate_details(monkeypatch):
     monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
     log_info = Mock()

@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.16:
+Arquitectura v0.17:
 
 Agents
 ↓
@@ -126,9 +126,10 @@ versión 1 requiere estos campos para cada entrada:
 - `classification`: una de `management_only`, `internal_delivery`,
   `client_shareable` o `public`;
 - `owner`: lista no vacía de responsables;
-- `status`: `active` o `disabled`.
+- `status`: `active` o `disabled`;
+- `source_type`: `knowledge_source` o `archive_destination`;
 - `capabilities`: matriz explícita `read`, `create`, `update`, `move`, `delete`
-  y `share`. Las mutaciones son `false` por defecto.
+  `share` y `convert`. Las mutaciones son `false` por defecto.
 
 Para registrar una fuente nueva, se agrega una entrada completa con un `id` y
 un `location_id` únicos, se elige una de las cuatro clasificaciones y se valida
@@ -314,8 +315,8 @@ Tools disponibles:
 - `list_sources`: metadata no sensible del registry;
 - `get_operation_history`: historial seguro de `create_source_artifact`,
   `update_source_artifact`, `move_source_artifact`, `delete_source_artifact` y
-  `share_source_artifact`, filtrable por fuente u operación y limitado a 50
-  resultados;
+  `share_source_artifact` y `convert_source_artifact`, filtrable por fuente u
+  operación y limitado a 50 resultados;
 - `discover_source_candidates`: propone Shared Drives y carpetas raíz no
   registradas, sin ejecutar cambios;
 - `get_source_candidate_details`: devuelve detalle seguro de un candidato por
@@ -328,8 +329,10 @@ Tools disponibles:
   con capability `create` y aprobación externa;
 - `update_source_artifact`: anexa texto acotado a un Doc source-scoped con
   capability `update`;
-- `move_source_artifact`: mueve un Doc únicamente dentro de la misma fuente con
-  capability `move`;
+- `move_source_artifact`: mueve artefactos nativos u Office dentro de la misma
+  fuente o a un `archive_destination` aprobado, con capability `move`;
+- `convert_source_artifact`: importa XLSX/XLSM como Google Sheet, DOCX como
+  Google Doc y PPTX como Google Slides mediante conversión nativa de Drive;
 - `delete_source_artifact`: envía un artefacto autorizado a la papelera de
   Drive con capability `delete`;
 - `share_source_artifact`: concede acceso `reader` a una audiencia de correo
@@ -344,7 +347,7 @@ Tools disponibles:
 Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
-propagan como tool errors legibles. Solo los cinco tools de mutación anteriores
+propagan como tool errors legibles. Solo los seis tools de mutación anteriores
 escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
 herramientas de proposals solo persisten o consultan intenciones pendientes.
 
@@ -358,10 +361,23 @@ solo `name`, `type`, `mime_type`, `extension`, `size`, `modified_time` y
 usuarios.
 
 La extensión se deriva de un MIME type Office conocido, no del nombre del
-archivo. Esta capacidad es únicamente de inspección: no convierte, reemplaza,
-archiva ni elimina artefactos y no modifica el Source Registry. Cualquier
-normalización futura deberá seguir un workflow separado con decisión del
-Management Agent y aprobación humana.
+archivo. La inspección por sí misma no modifica nada. La conversión y el
+archivado existen como tools separados y solo se ejecutan con capability y una
+referencia de aprobación externa.
+
+## Artifact lifecycle
+
+`convert_source_artifact` descarga el binario Office de forma transitoria y lo
+vuelve a cargar indicando el MIME type Google-native. Drive realiza la
+importación; el Gateway no interpreta celdas, no reconstruye documentos y no
+reemplaza el original. La operación devuelve metadata del artefacto original y
+del nuevo artefacto nativo.
+
+Un registro con `source_type: archive_destination` puede recibir artefactos
+mediante `move_source_artifact(destination_source_id=...)`, pero se excluye de
+listados, retrieval y autorización implícita de conocimiento. No hay destinos
+de archivo inferidos: deben existir de forma explícita y versionada en el Source
+Registry, estar activos y habilitar `move`.
 
 ## Historial operacional
 
@@ -370,7 +386,7 @@ mediante un adapter read-only y ADC de Cloud Run. No ofrece acceso general a
 Cloud Logging ni una ruta administrativa paralela. La consulta acepta:
 
 - `source_id` opcional, que debe existir y continuar autorizado;
-- `operation` opcional, restringida a las cinco mutaciones gobernadas;
+- `operation` opcional, restringida a las seis mutaciones gobernadas;
 - `limit`, entre 1 y 50, con valor predeterminado 10.
 
 Ejemplo de resultado MCP:
@@ -387,7 +403,6 @@ Ejemplo de resultado MCP:
       "request_id": "request-correlation-id",
       "correlation_id": "request-correlation-id"
     }
-  ],
   "request_id": "history-query-request-id"
 }
 ```

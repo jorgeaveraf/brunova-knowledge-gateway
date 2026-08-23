@@ -151,3 +151,35 @@ def test_resource_outside_registry_is_rejected():
         policy.authorize(resource(ancestors=("another_folder_123",)))
 
     assert error.value.code == "source_not_allowed"
+
+
+def test_archive_destination_is_not_readable_as_a_knowledge_source():
+    archive = SourceDefinition.model_validate(
+        {
+            "id": "legacy_archive",
+            "name": "98 Legacy",
+            "system": "google_workspace",
+            "location_type": "folder",
+            "location_id": "archive_folder_123",
+            "classification": "management_only",
+            "owner": ["Management"],
+            "status": "active",
+            "source_type": "archive_destination",
+            "capabilities": {"read": False, "move": True},
+        }
+    )
+    source_registry = SourceRegistry(
+        SourceRegistryDocument(version=1, sources=(archive,))
+    )
+    policy = SourceAccessPolicy(settings(), source_registry)
+
+    with pytest.raises(WorkspaceAdapterError) as error:
+        policy.authorize_source(archive)
+
+    assert error.value.code == "source_not_readable"
+    assert policy.authorize_source(archive, require_read=False).definition == archive
+    with pytest.raises(WorkspaceAdapterError) as implicit_error:
+        policy.authorize(
+            resource(ancestors=("archive_folder_123",))
+        )
+    assert implicit_error.value.code == "source_not_allowed"

@@ -41,6 +41,7 @@ def test_source_metadata_excludes_internal_registry_fields(tmp_path):
         "system": "google_workspace",
         "classification": "management_only",
         "status": "active",
+        "source_type": "knowledge_source",
         "capabilities": {
             "read": True,
             "create": False,
@@ -48,6 +49,7 @@ def test_source_metadata_excludes_internal_registry_fields(tmp_path):
             "move": False,
             "delete": False,
             "share": False,
+            "convert": False,
         },
     }
 
@@ -85,6 +87,7 @@ def test_capability_matrix_defaults_fail_closed_for_mutations(tmp_path):
     assert source.capabilities.move is False
     assert source.capabilities.delete is False
     assert source.capabilities.share is False
+    assert source.capabilities.convert is False
 
 
 def test_versioned_registry_enables_full_crud_only_for_approved_template():
@@ -101,6 +104,7 @@ def test_versioned_registry_enables_full_crud_only_for_approved_template():
         "move": False,
         "delete": False,
         "share": False,
+        "convert": False,
     }
     assert all(template.model_dump().values())
     assert brunova_management.model_dump() == {
@@ -110,4 +114,5 @@ def test_versioned_registry_enables_full_crud_only_for_approved_template():
         "move": False,
         "delete": False,
         "share": False,
+        "convert": False,
     }
