@@ -14,6 +14,13 @@ from app.adapters.google_workspace.models import (
     WorkspaceResource,
 )
 from app.config.settings import Settings
+from app.artifact_refs import ArtifactReferenceCodec
+from app.document_production import (
+    DocumentEditResult,
+    DocumentStructure,
+    ParagraphSummary,
+    TabStructure,
+)
 from app.policies.content_mutation import ContentMutationPolicy
 from app.policies.source_access import SourceAccessPolicy
 from app.operation_history import GovernedOperation, OperationHistoryEntry
@@ -94,6 +101,8 @@ class FakeWorkspaceAdapter:
         self.deleted = []
         self.shared = []
         self.converted = []
+        self.copied = []
+        self.renamed = []
 
     def list_source_files(self, *, source, limit, source_policy):
         assert source.definition.id == "career_ops"
@@ -136,10 +145,18 @@ class FakeWorkspaceAdapter:
             )
         ]
 
+    def find_resources(self, *, name, mime_type=None):
+        resource = self.get_resource("document_12345")
+        return [replace(resource, name=name)] if mime_type in (None, resource.mime_type) else []
+
+    def logical_path(self, resource):
+        return f"Career Ops/{resource.name}"
+
     def get_resource(self, resource_id):
         is_destination = resource_id in (
             "destination_folder_123",
             "archive_folder_123",
+            "allowed_folder_123",
         )
         office_mime_type = None
         if resource_id.startswith("xlsx"):
@@ -206,6 +223,20 @@ class FakeWorkspaceAdapter:
             parent_ids=(destination.id,),
         )
 
+    def copy_resource(self, *, resource, name, destination):
+        self.copied.append((resource.id, name, destination.id))
+        return replace(
+            resource,
+            id="copied_document_123",
+            name=name,
+            ancestor_ids=(destination.id,),
+            parent_ids=(destination.id,),
+        )
+
+    def rename_resource(self, *, resource, name):
+        self.renamed.append((resource.id, name))
+        return replace(resource, name=name)
+
     def delete_resource(self, *, resource):
         self.deleted.append(resource.id)
         return resource
@@ -232,6 +263,7 @@ class FakeDocsAdapter:
 
     def __init__(self):
         self.appended = []
+        self.structured_edits = []
 
     def get_document(self, resource, *, max_chars):
         return GoogleDocContent(
@@ -246,6 +278,25 @@ class FakeDocsAdapter:
 
     def append_text(self, resource, *, text):
         self.appended.append((resource.id, text))
+
+    def inspect_structure(self, resource, *, artifact_ref, source_id):
+        return DocumentStructure(
+            artifact_ref=artifact_ref,
+            name=resource.name,
+            source_id=source_id,
+            revision_id="revision-1",
+            tabs=[TabStructure(tab_id="tab-1", title="Tab 1", paragraphs=[], tables=[])],
+            headers=[],
+            footers=[],
+            image_count=0,
+            document_style={},
+            placeholders=[],
+            total_characters=0,
+        )
+
+    def edit_structure(self, resource, *, required_revision_id, operations):
+        self.structured_edits.append((resource.id, required_revision_id, operations))
+        return "revision-2"
 
 
 class FakeSheetsAdapter:
@@ -322,6 +373,7 @@ def runtime(*, in_source=True, mutation_enabled=True, include_archive=False):
         source_discovery=FakeDiscovery(source_registry),
         proposal_store=YamlSourceProposalStore(MemoryObjectBackend()),
         mutation_policy=ContentMutationPolicy(source_registry, source_policy),
+        artifact_reference_codec=ArtifactReferenceCodec.for_testing(),
     )
 
 
@@ -329,7 +381,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_seventeen_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_twenty_three_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -356,7 +408,251 @@ def test_mcp_exposes_only_the_seventeen_governed_tools(monkeypatch):
         "share_source_artifact",
         "inspect_source_artifacts",
         "convert_source_artifact",
+        "resolve_source_artifact",
+        "copy_source_artifact",
+        "rename_source_artifact",
+        "inspect_document_structure",
+        "edit_source_document",
+        "validate_document_structure",
     }
+
+
+def test_structured_document_production_flow_uses_opaque_refs_and_audits(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            resolved = await client.call_tool(
+                "resolve_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "name": "Approved Reference",
+                    "artifact_type": "document",
+                },
+            )
+            artifact_ref = resolved.structured_content["artifact_ref"]
+            copied = await client.call_tool(
+                "copy_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "name": "Controlled Production Copy",
+                    "approval_reference": "BR-019-test-copy",
+                },
+            )
+            copied_ref = copied.structured_content["artifact"]["artifact_ref"]
+            renamed = await client.call_tool(
+                "rename_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": copied_ref,
+                    "name": "Controlled Production Final",
+                    "approval_reference": "BR-019-test-rename",
+                },
+            )
+            inspected = await client.call_tool(
+                "inspect_document_structure",
+                {"source_id": "career_ops", "artifact_ref": copied_ref},
+            )
+            edited = await client.call_tool(
+                "edit_source_document",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": copied_ref,
+                    "required_revision_id": "revision-1",
+                    "operations": [
+                        {"operation": "insert_text_at_index", "index": 1, "text": "BR-019"},
+                        {
+                            "operation": "apply_paragraph_style",
+                            "start_index": 1,
+                            "end_index": 7,
+                            "named_style_type": "TITLE",
+                        },
+                    ],
+                    "approval_reference": "BR-019-test-edit",
+                },
+            )
+            validated = await client.call_tool(
+                "validate_document_structure",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": copied_ref,
+                    "requirements": {"minimum_characters": 0},
+                    "expected_revision_id": "revision-1",
+                },
+            )
+            return resolved, copied, renamed, inspected, edited, validated
+
+    resolved, copied, renamed, inspected, edited, validated = run(scenario())
+
+    assert all(not result.is_error for result in (resolved, copied, renamed, inspected, edited, validated))
+    assert resolved.structured_content["artifact_ref"].startswith("artifact_")
+    assert "id" not in resolved.structured_content
+    assert copied.structured_content["artifact"]["artifact_ref"].startswith("artifact_")
+    assert "id" not in copied.structured_content["artifact"]
+    assert inspected.structured_content["revision_id"] == "revision-1"
+    assert edited.structured_content["revision_id"] == "revision-2"
+    assert validated.structured_content["passed"] is True
+    assert gateway_runtime.workspace_adapter.copied
+    assert gateway_runtime.workspace_adapter.renamed
+    assert len(gateway_runtime.docs_adapter.structured_edits[0][2]) == 2
+    assert [call.kwargs["action"] for call in audit.call_args_list[-6:]] == [
+        "resolve_source_artifact",
+        "copy_source_artifact",
+        "rename_source_artifact",
+        "inspect_document_structure",
+        "edit_source_document",
+        "validate_document_structure",
+    ]
+    assert all("content" not in call.kwargs and "operations" not in call.kwargs for call in audit.call_args_list[-6:])
+
+
+def test_artifact_resolution_rejects_missing_ambiguous_and_out_of_scope(monkeypatch):
+    gateway_runtime = runtime()
+    in_scope = gateway_runtime.workspace_adapter.get_resource("document_12345")
+    outside = replace(in_scope, id="outside_document_123", ancestor_ids=("other_folder_123",))
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+
+    async def call_with(matches):
+        gateway_runtime.workspace_adapter.find_resources = Mock(return_value=matches)
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "resolve_source_artifact",
+                {"source_id": "career_ops", "name": "Exact Name"},
+            )
+
+    missing = run(call_with([]))
+    ambiguous = run(call_with([in_scope, replace(in_scope, id="document_67890")]))
+    out_of_scope = run(call_with([outside]))
+
+    assert "artifact_not_found" in missing.content[0].text
+    assert "artifact_selector_ambiguous" in ambiguous.content[0].text
+    assert "artifact_not_found" in out_of_scope.content[0].text
+
+
+def test_structured_mutations_require_approval_and_enforce_source_scope(monkeypatch):
+    permitted_runtime = runtime()
+    artifact_ref = permitted_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="document_12345"
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: permitted_runtime)
+
+    async def missing_approval_scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "copy_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "name": "Must Not Be Copied",
+                },
+            )
+
+    missing_approval = run(missing_approval_scenario())
+    assert missing_approval.is_error is True
+    assert "mutation_approval_required" in missing_approval.content[0].text
+    assert permitted_runtime.workspace_adapter.copied == []
+
+    outside_runtime = runtime(in_source=False)
+    outside_ref = outside_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="document_12345"
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: outside_runtime)
+
+    async def outside_scope_scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "edit_source_document",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": outside_ref,
+                    "required_revision_id": "revision-1",
+                    "operations": [
+                        {"operation": "insert_text_at_index", "index": 1, "text": "blocked"}
+                    ],
+                    "approval_reference": "BR-019-test-blocked",
+                },
+            )
+
+    outside_scope = run(outside_scope_scenario())
+    assert outside_scope.is_error is True
+    assert "resource_not_in_source" in outside_scope.content[0].text
+    assert outside_runtime.docs_adapter.structured_edits == []
+
+
+def test_document_quality_gate_reports_specific_failures_without_mutation(monkeypatch):
+    gateway_runtime = runtime()
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="document_12345"
+    )
+    gateway_runtime.docs_adapter.inspect_structure = Mock(
+        return_value=DocumentStructure(
+            artifact_ref=artifact_ref,
+            name="Controlled Doc",
+            source_id="career_ops",
+            revision_id="revision-3",
+            tabs=[
+                TabStructure(
+                    tab_id="tab-1",
+                    title="Main",
+                    paragraphs=[
+                        ParagraphSummary(
+                            start_index=1,
+                            end_index=20,
+                            text="# Draft {{owner}}\n",
+                            named_style_type="NORMAL_TEXT",
+                        )
+                    ],
+                    tables=[],
+                )
+            ],
+            headers=[],
+            footers=[],
+            image_count=0,
+            document_style={},
+            placeholders=["{{owner}}"],
+            total_characters=18,
+        )
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "validate_document_structure",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "requirements": {
+                        "expected_headings": ["Executive Summary"],
+                        "minimum_table_count": 1,
+                        "require_header": True,
+                        "require_footer": True,
+                        "minimum_characters": 100,
+                    },
+                    "expected_revision_id": "revision-4",
+                },
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is False
+    assert result.structured_content["passed"] is False
+    for check in (
+        "expected_headings",
+        "minimum_tables",
+        "header",
+        "footer",
+        "minimum_content",
+        "no_placeholders",
+        "no_markdown",
+        "revision",
+    ):
+        assert result.structured_content["checks"][check] is False
+    assert gateway_runtime.docs_adapter.structured_edits == []
 
 
 def test_mcp_inspects_source_scoped_safe_artifact_metadata_and_audits(monkeypatch):
@@ -706,10 +1002,8 @@ def test_mcp_converts_xlsx_and_xlsm_then_moves_original_with_full_audit(monkeypa
         "convert_source_artifact",
         "move_source_artifact",
     ]
-    assert lifecycle_audits[0].kwargs["resource_id"] == "xlsx_artifact_123"
-    assert lifecycle_audits[0].kwargs["created_resource_id"] == (
-        "converted_xlsx_artifact_123"
-    )
+    assert lifecycle_audits[0].kwargs["resource_id"] is None
+    assert lifecycle_audits[0].kwargs["created_resource_id"].startswith("artifact_")
     assert all("content" not in call.kwargs for call in lifecycle_audits)
 
 

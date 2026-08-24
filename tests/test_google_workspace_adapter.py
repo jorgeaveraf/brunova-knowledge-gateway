@@ -436,6 +436,89 @@ def test_create_document_targets_only_authorized_source_root():
     )
 
 
+def test_copy_native_document_preserves_source_and_targets_explicit_folder():
+    copy_request = Mock()
+    copy_request.execute.return_value = {
+        "id": "copied_document_123",
+        "name": "Production Copy",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": ["allowed_folder_123"],
+    }
+    files = Mock()
+    files.copy.return_value = copy_request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(), credentials_factory=Mock(), service_builder=Mock(return_value=drive)
+    )
+    original = WorkspaceResource(
+        id="document_12345",
+        name="Approved Reference",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+        parent_ids=("allowed_folder_123",),
+    )
+    destination = WorkspaceResource(
+        id="allowed_folder_123",
+        name="Career Ops",
+        mime_type="application/vnd.google-apps.folder",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=(),
+    )
+
+    copied = adapter.copy_resource(
+        resource=original, name="Production Copy", destination=destination
+    )
+
+    assert copied.id == "copied_document_123"
+    assert original.id == "document_12345"
+    files.copy.assert_called_once_with(
+        fileId="document_12345",
+        body={"name": "Production Copy", "parents": ["allowed_folder_123"]},
+        fields="id,name,mimeType,modifiedTime,driveId,parents",
+        supportsAllDrives=True,
+    )
+
+
+def test_rename_resource_changes_only_name():
+    update_request = Mock()
+    update_request.execute.return_value = {
+        "id": "document_12345",
+        "name": "Final Name",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": ["allowed_folder_123"],
+    }
+    files = Mock()
+    files.update.return_value = update_request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(), credentials_factory=Mock(), service_builder=Mock(return_value=drive)
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Draft",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+        parent_ids=("allowed_folder_123",),
+    )
+
+    renamed = adapter.rename_resource(resource=resource, name="Final Name")
+
+    assert renamed.name == "Final Name"
+    files.update.assert_called_once_with(
+        fileId="document_12345",
+        body={"name": "Final Name"},
+        fields="id,name,mimeType,modifiedTime,driveId,parents",
+        supportsAllDrives=True,
+    )
+
+
 def test_move_resource_uses_explicit_parent_transition():
     update_request = Mock()
     update_request.execute.return_value = {

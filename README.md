@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.17:
+Arquitectura v0.18:
 
 Agents
 ↓
@@ -287,7 +287,10 @@ presencia y la conserva en auditoría.
 Las operaciones soportadas están deliberadamente acotadas:
 
 - crear un Google Doc nativo vacío en la raíz de la fuente;
-- anexar hasta 4,000 caracteres a un Google Doc perteneciente a la fuente;
+- anexar hasta 4,000 caracteres mediante la operación legacy;
+- resolver artefactos por nombre/ruta exactos a referencias opacas source-bound;
+- copiar y renombrar Google Docs mediante capabilities y aprobación;
+- inspeccionar, editar y validar estructura documental de forma semántica;
 - mover un Google Doc entre carpetas pertenecientes a la misma fuente;
 - enviar un artefacto source-scoped a la papelera recuperable de Drive;
 - conceder acceso `reader` a una dirección de correo explícita sobre un
@@ -296,9 +299,9 @@ Las operaciones soportadas están deliberadamente acotadas:
 El root registrado de una fuente no puede eliminarse ni compartirse como si
 fuera un artefacto contenido.
 
-No hay update arbitrario de Drive, reemplazo completo de documentos, escritura
-de Sheets, movimiento entre fuentes, eliminación permanente, ownership,
-publicación pública ni modificación automática del Source Registry. El
+No hay `batchUpdate` crudo expuesto al consumidor, escritura de Sheets,
+eliminación permanente, ownership, publicación pública ni modificación
+automática del Source Registry. El
 contenido enviado en `change` nunca se registra en auditoría. La audiencia
 normalizada de share se conserva en la auditoría interna, pero se excluye de
 `get_operation_history`.
@@ -333,6 +336,20 @@ Tools disponibles:
   fuente o a un `archive_destination` aprobado, con capability `move`;
 - `convert_source_artifact`: importa XLSX/XLSM como Google Sheet, DOCX como
   Google Doc y PPTX como Google Slides mediante conversión nativa de Drive;
+  acepta `artifact_ref` y devuelve referencias opacas para encadenar el flujo;
+- `resolve_source_artifact`: resuelve nombre exacto o logical path dentro de una
+  fuente y devuelve un handle cifrado, autenticado y ligado a esa fuente;
+- `copy_source_artifact`: copia un Google Doc nativo sin modificar el original;
+- `rename_source_artifact`: renombra un artefacto source-scoped;
+- `inspect_document_structure`: devuelve revisión, tabs, índices, párrafos,
+  headings, listas, tablas/celdas, headers, footers, imágenes, page setup y
+  placeholders mediante un contrato acotado;
+- `edit_source_document`: ejecuta únicamente operaciones semánticas allowlisted
+  de texto, estilos, listas, tablas y headers/footers con
+  `WriteControl.requiredRevisionId`;
+- `validate_document_structure`: quality gate read-only para headings,
+  placeholders, tablas, header/footer, contenido mínimo, residuos Markdown y
+  revisión esperada;
 - `delete_source_artifact`: envía un artefacto autorizado a la papelera de
   Drive con capability `delete`;
 - `share_source_artifact`: concede acceso `reader` a una audiencia de correo
@@ -347,8 +364,8 @@ Tools disponibles:
 Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
-propagan como tool errors legibles. Solo los seis tools de mutación anteriores
-escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
+propagan como tool errors legibles. Solo los tools con capability de mutación y
+`approval_reference` escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
 herramientas de proposals solo persisten o consultan intenciones pendientes.
 
 ## Office Artifact Awareness
@@ -379,6 +396,32 @@ listados, retrieval y autorización implícita de conocimiento. No hay destinos
 de archivo inferidos: deben existir de forma explícita y versionada en el Source
 Registry, estar activos y habilitar `move`.
 
+## Structured Document Production
+
+La producción documental v1 reutiliza artefactos aprobados sin exponer IDs de
+Drive. `resolve_source_artifact` emite un `artifact_ref` cifrado y autenticado,
+ligado al `source_id`; una referencia manipulada o usada con otra fuente falla
+cerrada. La clave se deriva con separación criptográfica del token del Gateway,
+por lo que no existe otro secreto, base de datos ni estado de referencias.
+Rotar `BRUNOVA_GATEWAY_TOKEN` invalida referencias emitidas anteriormente.
+
+`copy_source_artifact`, `rename_source_artifact` y `edit_source_document`
+requieren aprobación externa y las capabilities `create` o `update` según la
+operación. Cada edición acepta entre 1 y 50 operaciones tipadas: insertar,
+eliminar o reemplazar texto; estilos de párrafo y texto; listas; tablas,
+filas/columnas/celdas y estilos básicos de celda; creación y edición indexada de
+headers/footers. El cliente nunca puede enviar requests arbitrarios de Google
+Docs. Debe inspeccionar primero y reenviar el `revision_id`; una revisión
+obsoleta produce `document_revision_conflict` sin aplicar el batch.
+
+El quality gate es de solo lectura y no constituye aprobación. Verifica
+estructura esperada sin devolver permisos, credenciales, contenido completo ni
+IDs internos. Copiar un Google Doc conserva la topología nativa del original;
+convertir DOCX crea un artefacto Google-native nuevo y conserva intacto el
+Office original. La fidelidad concreta de una conversión sigue dependiendo del
+importador nativo de Google Drive y debe confirmarse mediante inspección y
+quality gate.
+
 ## Historial operacional
 
 `get_operation_history` consulta los eventos estructurados del propio Gateway
@@ -386,7 +429,7 @@ mediante un adapter read-only y ADC de Cloud Run. No ofrece acceso general a
 Cloud Logging ni una ruta administrativa paralela. La consulta acepta:
 
 - `source_id` opcional, que debe existir y continuar autorizado;
-- `operation` opcional, restringida a las seis mutaciones gobernadas;
+- `operation` opcional, restringida a las mutaciones gobernadas conocidas;
 - `limit`, entre 1 y 50, con valor predeterminado 10.
 
 Ejemplo de resultado MCP:

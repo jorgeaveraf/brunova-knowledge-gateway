@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import (
-    ArtifactConversionResult,
     ArtifactConversionTarget,
     ArtifactMetadata,
     DriveFile,
@@ -21,6 +20,17 @@ from app.adapters.google_workspace.models import (
     SourceArtifactMutationResult,
 )
 from app.audit import correlation_id, emit_audit_record
+from app.artifact_refs import ArtifactReferenceCodec
+from app.document_production import (
+    ArtifactReference,
+    ArtifactReferenceConversionResult,
+    ArtifactReferenceMutationResult,
+    DocumentEditOperation,
+    DocumentEditResult,
+    DocumentQualityRequirements,
+    DocumentQualityResult,
+    DocumentStructure,
+)
 from app.policies.content_mutation import ContentMutationPolicy
 from app.operation_history import (
     DEFAULT_OPERATION_HISTORY_LIMIT,
@@ -30,22 +40,28 @@ from app.operation_history import (
 )
 from app.knowledge import (
     discover_candidate_sources,
+    copy_authorized_source_artifact,
     create_authorized_source_artifact,
     convert_authorized_source_artifact,
     delete_authorized_source_artifact,
     get_candidate_details,
     inspect_authorized_source_artifacts,
+    inspect_authorized_document_structure,
     list_authorized_source_files,
     list_registered_sources,
     list_registered_source_proposals,
     move_authorized_source_artifact,
+    rename_authorized_source_artifact,
+    resolve_authorized_source_artifact,
     registered_source,
     registered_source_proposal,
     register_source_proposal,
     retrieve_authorized_document,
     retrieve_authorized_sheet_range,
     share_authorized_source_artifact,
+    edit_authorized_source_document,
     update_authorized_source_artifact,
+    validate_authorized_document_structure,
 )
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
 from app.source_discovery.interface import CandidateDetailsResponse, DiscoveryResponse
@@ -101,7 +117,27 @@ class SourceMutationToolResult(SourceArtifactMutationResult):
     request_id: str
 
 
-class ArtifactConversionToolResult(ArtifactConversionResult):
+class ArtifactConversionToolResult(ArtifactReferenceConversionResult):
+    request_id: str
+
+
+class ArtifactReferenceToolResult(ArtifactReference):
+    request_id: str
+
+
+class ArtifactReferenceMutationToolResult(ArtifactReferenceMutationResult):
+    request_id: str
+
+
+class DocumentStructureToolResult(DocumentStructure):
+    request_id: str
+
+
+class DocumentEditToolResult(DocumentEditResult):
+    request_id: str
+
+
+class DocumentQualityToolResult(DocumentQualityResult):
     request_id: str
 
 
@@ -112,7 +148,7 @@ class OperationHistoryToolResult(BaseModel):
 
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.17.0",
+    version="0.18.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
         "execute full capability-gated Google Workspace CRUD operations with an "
@@ -121,6 +157,32 @@ mcp_server = MCPServer(
         "log access. No tool approves sources or mutates Source Registry."
     ),
 )
+
+
+def _reference_codec(runtime: KnowledgeRuntime) -> ArtifactReferenceCodec:
+    if runtime.artifact_reference_codec is None:
+        raise WorkspaceAdapterError(
+            "artifact_reference_unavailable",
+            "Artifact references are not configured.",
+            503,
+        )
+    return runtime.artifact_reference_codec
+
+
+def _resolved_artifact_id(
+    runtime: KnowledgeRuntime,
+    *,
+    source_id: str,
+    artifact_ref: str | None,
+    legacy_id: str | None,
+) -> str:
+    if artifact_ref:
+        return _reference_codec(runtime).decode(artifact_ref, source_id=source_id)
+    if legacy_id:
+        return legacy_id
+    raise WorkspaceAdapterError(
+        "artifact_reference_required", "An artifact reference is required.", 422
+    )
 
 
 def _mcp_request_id(ctx: Context) -> str:
@@ -401,6 +463,206 @@ def get_source_proposal(
 
 
 @mcp_server.tool()
+def resolve_source_artifact(
+    source_id: str,
+    ctx: Context,
+    name: str | None = None,
+    logical_path: str | None = None,
+    artifact_type: str | None = None,
+) -> ArtifactReferenceToolResult:
+    """Resolve an exact source-scoped selector to an opaque actionable handle."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="resolve_source_artifact",
+        operation=lambda runtime, request_id: ArtifactReferenceToolResult(
+            **resolve_authorized_source_artifact(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                name=name,
+                logical_path=logical_path,
+                artifact_type=artifact_type,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_type="source_artifact_reference",
+        result_resource_id=lambda result: result.artifact_ref,
+    )
+
+
+@mcp_server.tool()
+def copy_source_artifact(
+    source_id: str,
+    artifact_ref: str,
+    name: str,
+    ctx: Context,
+    approval_reference: str = "",
+    destination_ref: str | None = None,
+) -> ArtifactReferenceMutationToolResult:
+    """Copy one native Google Doc while preserving the source artifact."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="copy_source_artifact",
+        operation=lambda runtime, request_id: ArtifactReferenceMutationToolResult(
+            **copy_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                name=name,
+                approval_reference=approval_reference,
+                destination_ref=destination_ref,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document",
+        result_resource_id=lambda result: result.artifact.artifact_ref,
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(approval_reference),
+    )
+
+
+@mcp_server.tool()
+def rename_source_artifact(
+    source_id: str,
+    artifact_ref: str,
+    name: str,
+    ctx: Context,
+    approval_reference: str = "",
+) -> ArtifactReferenceMutationToolResult:
+    """Rename one source-scoped artifact through the governed update capability."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="rename_source_artifact",
+        operation=lambda runtime, request_id: ArtifactReferenceMutationToolResult(
+            **rename_authorized_source_artifact(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                name=name,
+                approval_reference=approval_reference,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_drive_artifact",
+        result_resource_id=lambda result: result.artifact.artifact_ref,
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(approval_reference),
+    )
+
+
+@mcp_server.tool()
+def inspect_document_structure(
+    source_id: str,
+    artifact_ref: str,
+    ctx: Context,
+) -> DocumentStructureToolResult:
+    """Inspect bounded Google Docs topology, indexes, styles, and placeholders."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="inspect_document_structure",
+        operation=lambda runtime, request_id: DocumentStructureToolResult(
+            **inspect_authorized_document_structure(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document_structure",
+    )
+
+
+@mcp_server.tool()
+def edit_source_document(
+    source_id: str,
+    artifact_ref: str,
+    required_revision_id: str,
+    operations: list[DocumentEditOperation],
+    ctx: Context,
+    approval_reference: str = "",
+) -> DocumentEditToolResult:
+    """Apply only allowlisted semantic Docs operations at an inspected revision."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="edit_source_document",
+        operation=lambda runtime, request_id: DocumentEditToolResult(
+            **edit_authorized_source_document(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                required_revision_id=required_revision_id,
+                operations=operations,
+                approval_reference=approval_reference,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(approval_reference),
+    )
+
+
+@mcp_server.tool()
+def validate_document_structure(
+    source_id: str,
+    artifact_ref: str,
+    requirements: DocumentQualityRequirements,
+    ctx: Context,
+    expected_revision_id: str | None = None,
+) -> DocumentQualityToolResult:
+    """Run a read-only structural quality gate against one inspected document."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="validate_document_structure",
+        operation=lambda runtime, request_id: DocumentQualityToolResult(
+            **validate_authorized_document_structure(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                requirements=requirements,
+                expected_revision_id=expected_revision_id,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document_quality",
+    )
+
+
+@mcp_server.tool()
 def create_source_artifact(
     source_id: str,
     name: str,
@@ -436,9 +698,10 @@ def create_source_artifact(
 @mcp_server.tool()
 def update_source_artifact(
     source_id: str,
-    document_id: str,
     change: str,
     ctx: Context,
+    artifact_ref: str | None = None,
+    document_id: str | None = None,
     approval_reference: str = "",
 ) -> SourceMutationToolResult:
     """Append bounded text to an authorized native Google Doc."""
@@ -453,14 +716,19 @@ def update_source_artifact(
                 workspace_adapter=runtime.workspace_adapter,
                 docs_adapter=runtime.docs_adapter,
                 source_id=source_id,
-                document_id=document_id,
+                document_id=_resolved_artifact_id(
+                    runtime,
+                    source_id=source_id,
+                    artifact_ref=artifact_ref,
+                    legacy_id=document_id,
+                ),
                 change=change,
                 approval_reference=approval_reference,
             ).model_dump(exclude={"request_id"}),
             request_id=request_id,
         ),
         source_id=source_id,
-        resource_id=document_id,
+        resource_id=artifact_ref or document_id,
         resource_type="google_document",
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference
@@ -471,8 +739,9 @@ def update_source_artifact(
 @mcp_server.tool()
 def move_source_artifact(
     source_id: str,
-    artifact_id: str,
     ctx: Context,
+    artifact_ref: str | None = None,
+    artifact_id: str | None = None,
     destination_folder_id: str | None = None,
     approval_reference: str = "",
     destination_source_id: str | None = None,
@@ -488,7 +757,12 @@ def move_source_artifact(
                 source_policy=runtime.source_policy,
                 workspace_adapter=runtime.workspace_adapter,
                 source_id=source_id,
-                artifact_id=artifact_id,
+                artifact_id=_resolved_artifact_id(
+                    runtime,
+                    source_id=source_id,
+                    artifact_ref=artifact_ref,
+                    legacy_id=artifact_id,
+                ),
                 destination_folder_id=destination_folder_id,
                 destination_source_id=destination_source_id,
                 approval_reference=approval_reference,
@@ -496,7 +770,7 @@ def move_source_artifact(
             request_id=request_id,
         ),
         source_id=source_id,
-        resource_id=artifact_id,
+        resource_id=artifact_ref or artifact_id,
         resource_type="google_drive_artifact",
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference
@@ -508,32 +782,68 @@ def move_source_artifact(
 @mcp_server.tool()
 def convert_source_artifact(
     source_id: str,
-    artifact_id: str,
     target_type: ArtifactConversionTarget,
     ctx: Context,
+    artifact_ref: str | None = None,
+    artifact_id: str | None = None,
     approval_reference: str = "",
 ) -> ArtifactConversionToolResult:
-    """Convert a supported Office artifact using native Google Drive import."""
+    """Convert Office to Google native; opaque references are the preferred input."""
+
+    def operation(runtime: KnowledgeRuntime, request_id: str) -> ArtifactConversionToolResult:
+        codec = _reference_codec(runtime)
+        if artifact_ref:
+            resolved_id = codec.decode(artifact_ref, source_id=source_id)
+        elif artifact_id:
+            # Compatibility path for pre-v0.18 consumers. New discovery flows do not
+            # expose Drive IDs and should always send artifact_ref.
+            resolved_id = artifact_id
+        else:
+            raise WorkspaceAdapterError(
+                "artifact_reference_required",
+                "An artifact reference is required.",
+                422,
+            )
+        converted = convert_authorized_source_artifact(
+            mutation_policy=runtime.mutation_policy,
+            source_policy=runtime.source_policy,
+            workspace_adapter=runtime.workspace_adapter,
+            source_id=source_id,
+            artifact_id=resolved_id,
+            target_type=target_type,
+            approval_reference=approval_reference,
+        )
+        original_ref = artifact_ref or codec.encode(
+            source_id=source_id, artifact_id=converted.original_artifact.id
+        )
+        return ArtifactConversionToolResult(
+            original_artifact=ArtifactReference(
+                artifact_ref=original_ref,
+                name=converted.original_artifact.name,
+                type=converted.original_artifact.type,
+                source_id=source_id,
+            ),
+            created_artifact=ArtifactReference(
+                artifact_ref=codec.encode(
+                    source_id=source_id, artifact_id=converted.created_artifact.id
+                ),
+                name=converted.created_artifact.name,
+                type=converted.created_artifact.type,
+                source_id=source_id,
+            ),
+            created_artifact_type=converted.created_artifact_type.value,
+            source_id=source_id,
+            request_id=request_id,
+        )
 
     return _execute_tool(
         ctx=ctx,
         action="convert_source_artifact",
-        operation=lambda runtime, request_id: ArtifactConversionToolResult(
-            **convert_authorized_source_artifact(
-                mutation_policy=runtime.mutation_policy,
-                source_policy=runtime.source_policy,
-                workspace_adapter=runtime.workspace_adapter,
-                source_id=source_id,
-                artifact_id=artifact_id,
-                target_type=target_type,
-                approval_reference=approval_reference,
-            ).model_dump(exclude={"request_id"}),
-            request_id=request_id,
-        ),
+        operation=operation,
         source_id=source_id,
-        resource_id=artifact_id,
+        resource_id=artifact_ref,
         resource_type="office_artifact",
-        created_resource_id=lambda result: result.created_artifact.id,
+        created_resource_id=lambda result: result.created_artifact.artifact_ref,
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference
         ),
@@ -543,8 +853,9 @@ def convert_source_artifact(
 @mcp_server.tool()
 def delete_source_artifact(
     source_id: str,
-    artifact_id: str,
     ctx: Context,
+    artifact_ref: str | None = None,
+    artifact_id: str | None = None,
     approval_reference: str = "",
 ) -> SourceMutationToolResult:
     """Move an authorized source artifact to Drive trash."""
@@ -558,13 +869,18 @@ def delete_source_artifact(
                 source_policy=runtime.source_policy,
                 workspace_adapter=runtime.workspace_adapter,
                 source_id=source_id,
-                artifact_id=artifact_id,
+                artifact_id=_resolved_artifact_id(
+                    runtime,
+                    source_id=source_id,
+                    artifact_ref=artifact_ref,
+                    legacy_id=artifact_id,
+                ),
                 approval_reference=approval_reference,
             ).model_dump(exclude={"request_id"}),
             request_id=request_id,
         ),
         source_id=source_id,
-        resource_id=artifact_id,
+        resource_id=artifact_ref or artifact_id,
         resource_type="google_drive_artifact",
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference
@@ -575,9 +891,10 @@ def delete_source_artifact(
 @mcp_server.tool()
 def share_source_artifact(
     source_id: str,
-    artifact_id: str,
     audience: str,
     ctx: Context,
+    artifact_ref: str | None = None,
+    artifact_id: str | None = None,
     approval_reference: str = "",
 ) -> SourceMutationToolResult:
     """Grant reader access to one explicit audience for an authorized artifact."""
@@ -591,14 +908,19 @@ def share_source_artifact(
                 source_policy=runtime.source_policy,
                 workspace_adapter=runtime.workspace_adapter,
                 source_id=source_id,
-                artifact_id=artifact_id,
+                artifact_id=_resolved_artifact_id(
+                    runtime,
+                    source_id=source_id,
+                    artifact_ref=artifact_ref,
+                    legacy_id=artifact_id,
+                ),
                 audience=audience,
                 approval_reference=approval_reference,
             ).model_dump(exclude={"request_id"}),
             request_id=request_id,
         ),
         source_id=source_id,
-        resource_id=artifact_id,
+        resource_id=artifact_ref or artifact_id,
         resource_type="google_drive_artifact",
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference
@@ -677,8 +999,9 @@ def inspect_source_artifacts(
 @mcp_server.tool()
 def retrieve_document(
     source_id: str,
-    document_id: str,
     ctx: Context,
+    artifact_ref: str | None = None,
+    document_id: str | None = None,
 ) -> GoogleDocContent:
     """Retrieve an authorized document that belongs to the selected source."""
 
@@ -689,7 +1012,12 @@ def retrieve_document(
             workspace_adapter=runtime.workspace_adapter,
             docs_adapter=runtime.docs_adapter,
             source_id=source_id,
-            document_id=document_id,
+            document_id=_resolved_artifact_id(
+                runtime,
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                legacy_id=document_id,
+            ),
         )
         return document.model_copy(update={"request_id": request_id})
 
@@ -698,7 +1026,7 @@ def retrieve_document(
         action="retrieve_document",
         operation=operation,
         source_id=source_id,
-        resource_id=document_id,
+        resource_id=artifact_ref or document_id,
         resource_type="google_doc",
     )
 

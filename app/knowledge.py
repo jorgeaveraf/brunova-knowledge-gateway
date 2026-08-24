@@ -15,6 +15,17 @@ from app.adapters.google_workspace.models import (
     SourceMetadata,
 )
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
+from app.artifact_refs import ArtifactReferenceCodec
+from app.document_production import (
+    ArtifactReference,
+    ArtifactReferenceMutationResult,
+    DocumentEditOperation,
+    DocumentEditResult,
+    DocumentQualityRequirements,
+    DocumentQualityResult,
+    DocumentStructure,
+    MARKDOWN_PATTERNS,
+)
 from app.policies.content_mutation import ContentMutationPolicy, MutationOperation
 from app.policies.source_access import SourceAccessPolicy
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
@@ -70,6 +81,10 @@ OFFICE_CONVERSION_TARGETS = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
         ArtifactConversionTarget.GOOGLE_PRESENTATION
     ),
+}
+
+ARTIFACT_TYPE_MIME_TYPES = {
+    value: key for key, value in ARTIFACT_TYPES.items()
 }
 
 
@@ -182,6 +197,262 @@ def create_authorized_source_artifact(
         name=safe_name,
     )
     return _mutation_result(resource, allowed_source, status="created")
+
+
+def resolve_authorized_source_artifact(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    name: str | None = None,
+    logical_path: str | None = None,
+    artifact_type: str | None = None,
+) -> ArtifactReference:
+    """Resolve one exact, authorized resource to an opaque source-bound handle."""
+
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    supplied_name = (name or "").strip()
+    supplied_path = (logical_path or "").strip().strip("/")
+    if not supplied_name and not supplied_path:
+        raise WorkspaceAdapterError(
+            "artifact_selector_invalid",
+            "An exact artifact name or logical path is required.",
+            422,
+        )
+    resolved_name = supplied_name or supplied_path.rsplit("/", 1)[-1]
+    if supplied_name and supplied_path and supplied_path.rsplit("/", 1)[-1] != supplied_name:
+        raise WorkspaceAdapterError(
+            "artifact_selector_invalid",
+            "The artifact name must match the logical path basename.",
+            422,
+        )
+    mime_type = ARTIFACT_TYPE_MIME_TYPES.get(artifact_type) if artifact_type else None
+    if artifact_type and not mime_type:
+        raise WorkspaceAdapterError(
+            "artifact_type_invalid", "The requested artifact type is unsupported.", 422
+        )
+    matches = workspace_adapter.find_resources(name=resolved_name, mime_type=mime_type)
+    authorized = []
+    for resource in matches:
+        try:
+            source_policy.authorize_resource_for_source(resource, allowed_source)
+        except WorkspaceAdapterError:
+            continue
+        if supplied_path:
+            candidate_path = workspace_adapter.logical_path(resource).strip("/")
+            if not candidate_path.casefold().endswith(supplied_path.casefold()):
+                continue
+        authorized.append(resource)
+    if not authorized:
+        raise WorkspaceAdapterError(
+            "artifact_not_found",
+            "No artifact matching the selector exists in the selected source.",
+            404,
+        )
+    if len(authorized) != 1:
+        raise WorkspaceAdapterError(
+            "artifact_selector_ambiguous",
+            "The selector matches multiple source artifacts; provide a logical path.",
+            409,
+        )
+    resource = authorized[0]
+    return _artifact_reference(reference_codec, source_id, resource)
+
+
+def copy_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    name: str,
+    approval_reference: str,
+    destination_ref: str | None = None,
+) -> ArtifactReferenceMutationResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.CREATE,
+        approval_reference=approval_reference,
+    )
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+        raise WorkspaceAdapterError(
+            "resource_type_invalid", "Only native Google Docs can be copied by this operation.", 422
+        )
+    destination = (
+        _resource_from_reference(
+            reference_codec,
+            workspace_adapter,
+            source_policy,
+            allowed_source,
+            source_id,
+            destination_ref,
+        )
+        if destination_ref
+        else workspace_adapter.get_resource(allowed_source.definition.location_id)
+    )
+    copied = workspace_adapter.copy_resource(
+        resource=resource,
+        name=mutation_policy.validate_name(name),
+        destination=destination,
+    )
+    return ArtifactReferenceMutationResult(
+        artifact=_artifact_reference(reference_codec, source_id, copied), status="copied"
+    )
+
+
+def rename_authorized_source_artifact(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    name: str,
+    approval_reference: str,
+) -> ArtifactReferenceMutationResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.UPDATE,
+        approval_reference=approval_reference,
+    )
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    _protect_source_root(resource.id, allowed_source)
+    renamed = workspace_adapter.rename_resource(
+        resource=resource, name=mutation_policy.validate_name(name)
+    )
+    return ArtifactReferenceMutationResult(
+        artifact=_artifact_reference(reference_codec, source_id, renamed), status="renamed"
+    )
+
+
+def inspect_authorized_document_structure(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+) -> DocumentStructure:
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    return docs_adapter.inspect_structure(
+        resource, artifact_ref=artifact_ref, source_id=source_id
+    )
+
+
+def edit_authorized_source_document(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    required_revision_id: str,
+    operations: list[DocumentEditOperation],
+    approval_reference: str,
+) -> DocumentEditResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.UPDATE,
+        approval_reference=approval_reference,
+    )
+    if not required_revision_id.strip():
+        raise WorkspaceAdapterError(
+            "document_revision_required", "A required document revision is mandatory.", 422
+        )
+    if not operations or len(operations) > 50:
+        raise WorkspaceAdapterError(
+            "document_operations_invalid", "Provide between 1 and 50 semantic operations.", 422
+        )
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    revision = docs_adapter.edit_structure(
+        resource,
+        required_revision_id=required_revision_id.strip(),
+        operations=operations,
+    )
+    return DocumentEditResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        revision_id=revision,
+        applied_operations=len(operations),
+    )
+
+
+def validate_authorized_document_structure(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    requirements: DocumentQualityRequirements,
+    expected_revision_id: str | None = None,
+) -> DocumentQualityResult:
+    structure = inspect_authorized_document_structure(
+        registry=registry,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        docs_adapter=docs_adapter,
+        reference_codec=reference_codec,
+        source_id=source_id,
+        artifact_ref=artifact_ref,
+    )
+    paragraphs = [paragraph for tab in structure.tabs for paragraph in tab.paragraphs]
+    headings = {paragraph.text.strip() for paragraph in paragraphs if (paragraph.named_style_type or "").startswith("HEADING_")}
+    full_text = "".join(paragraph.text for paragraph in paragraphs)
+    table_count = sum(len(tab.tables) for tab in structure.tabs)
+    checks = {
+        "expected_headings": all(item in headings for item in requirements.expected_headings),
+        "expected_sections": all(item in headings for item in requirements.expected_sections),
+        "minimum_tables": table_count >= requirements.minimum_table_count,
+        "header": not requirements.require_header or bool(structure.headers),
+        "footer": not requirements.require_footer or bool(structure.footers),
+        "minimum_content": structure.total_characters >= requirements.minimum_characters,
+        "no_placeholders": not requirements.reject_placeholders or not structure.placeholders,
+        "no_markdown": not requirements.reject_markdown or not any(pattern.search(full_text) for pattern in MARKDOWN_PATTERNS),
+        "revision": expected_revision_id is None or structure.revision_id == expected_revision_id,
+    }
+    issue_labels = {
+        "expected_headings": "One or more required headings are missing.",
+        "expected_sections": "One or more required sections are missing.",
+        "minimum_tables": "The document has fewer tables than required.",
+        "header": "A header is required.",
+        "footer": "A footer is required.",
+        "minimum_content": "The document does not meet the minimum content length.",
+        "no_placeholders": "Unresolved placeholders remain.",
+        "no_markdown": "Markdown-like formatting remains in the document.",
+        "revision": "The document revision does not match the expected revision.",
+    }
+    return DocumentQualityResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        revision_id=structure.revision_id,
+        passed=all(checks.values()),
+        checks=checks,
+        issues=[issue_labels[key] for key, passed in checks.items() if not passed],
+    )
 
 
 def update_authorized_source_artifact(
@@ -407,6 +678,31 @@ def _mutation_result(
         ),
         status=status,
     )
+
+
+def _artifact_reference(
+    codec: ArtifactReferenceCodec, source_id: str, resource
+) -> ArtifactReference:
+    return ArtifactReference(
+        artifact_ref=codec.encode(source_id=source_id, artifact_id=resource.id),
+        name=resource.name,
+        type=ARTIFACT_TYPES.get(resource.mime_type.casefold(), "file"),
+        source_id=source_id,
+    )
+
+
+def _resource_from_reference(
+    codec: ArtifactReferenceCodec,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    source_policy: SourceAccessPolicy,
+    allowed_source,
+    source_id: str,
+    artifact_ref: str,
+):
+    artifact_id = codec.decode(artifact_ref, source_id=source_id)
+    resource = workspace_adapter.get_resource(artifact_id)
+    source_policy.authorize_resource_for_source(resource, allowed_source)
+    return resource
 
 
 def list_authorized_source_files(

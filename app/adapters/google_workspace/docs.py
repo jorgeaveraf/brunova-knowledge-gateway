@@ -1,4 +1,4 @@
-"""Controlled Google Docs retrieval and governed append-only mutation."""
+"""Controlled Google Docs retrieval and allowlisted structured mutation."""
 
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
@@ -11,6 +11,32 @@ from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
 from app.adapters.google_workspace.models import GoogleDocContent, WorkspaceResource
 from app.config.settings import Settings
+from app.document_production import (
+    CreateFooterOperation,
+    CreateHeaderOperation,
+    DeleteContentOperation,
+    DocumentEditOperation,
+    DocumentStructure,
+    InsertTableColumnOperation,
+    InsertTableOperation,
+    InsertTableRowOperation,
+    InsertTextOperation,
+    ListOperation,
+    ParagraphStyleOperation,
+    ParagraphSummary,
+    ReplaceAllTextOperation,
+    SegmentSummary,
+    SectionSummary,
+    TableCellStyleOperation,
+    TableCellSummary,
+    TableSummary,
+    TabStructure,
+    TextStyleOperation,
+    TextStyleSummary,
+    UpdateTableCellOperation,
+    DeleteTableRowOperation,
+    PLACEHOLDER_PATTERN,
+)
 
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
 
@@ -72,7 +98,7 @@ class GoogleDocsAdapter:
             ) from error
 
     def append_text(self, resource: WorkspaceResource, *, text: str) -> None:
-        """Apply the only supported document update: append bounded text."""
+        """Apply the legacy bounded append operation retained for compatibility."""
 
         if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
             raise WorkspaceAdapterError(
@@ -100,6 +126,145 @@ class GoogleDocsAdapter:
                         ]
                     },
                 )
+                .execute()
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+        except OSError as error:
+            raise WorkspaceAdapterError(
+                "credentials_unavailable",
+                "Application Default Credentials are not available to the runtime.",
+                503,
+            ) from error
+
+    def inspect_structure(
+        self,
+        resource: WorkspaceResource,
+        *,
+        artifact_ref: str,
+        source_id: str,
+    ) -> DocumentStructure:
+        """Return a bounded, allowlisted structural view with actionable indexes."""
+
+        document = self._get_native_document(resource)
+        tabs = list(_tab_structures(document))
+        if not tabs:
+            paragraphs, tables = _parse_content(
+                document.get("body", {}).get("content", []), tab_id=None
+            )
+            tabs = [
+                TabStructure(
+                    tab_id="",
+                    title=document.get("title", resource.name),
+                    paragraphs=paragraphs,
+                    tables=tables,
+                )
+            ]
+        headers = _segment_structures(document.get("headers", {}))
+        footers = _segment_structures(document.get("footers", {}))
+        for tab in document.get("tabs", []):
+            tab_headers, tab_footers = _tab_segment_structures(tab)
+            headers.extend(tab_headers)
+            footers.extend(tab_footers)
+        all_text = "".join(
+            paragraph.text
+            for tab in tabs
+            for paragraph in tab.paragraphs
+        ) + "".join(
+            paragraph.text
+            for segment in (*headers, *footers)
+            for paragraph in segment.paragraphs
+        )
+        style = document.get("documentStyle", {})
+        return DocumentStructure(
+            artifact_ref=artifact_ref,
+            name=resource.name,
+            source_id=source_id,
+            revision_id=str(document.get("revisionId", "")),
+            tabs=tabs,
+            headers=headers,
+            footers=footers,
+            sections=list(_section_summaries(document)),
+            image_count=len(document.get("inlineObjects", {}))
+            + len(document.get("positionedObjects", {}))
+            + sum(_tab_image_count(tab) for tab in document.get("tabs", [])),
+            document_style=_safe_document_style(style),
+            placeholders=sorted(set(PLACEHOLDER_PATTERN.findall(all_text)))[:100],
+            total_characters=len(all_text),
+        )
+
+    def edit_structure(
+        self,
+        resource: WorkspaceResource,
+        *,
+        required_revision_id: str,
+        operations: list[DocumentEditOperation],
+    ) -> str:
+        """Execute semantic requests with optimistic concurrency protection."""
+
+        if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+            raise WorkspaceAdapterError(
+                "resource_type_invalid",
+                "The requested resource is not a native Google Doc.",
+                422,
+            )
+        requests: list[dict[str, Any]] = []
+        for operation in operations:
+            requests.extend(_operation_requests(operation))
+        try:
+            credentials = self._credentials_factory(self._settings)
+            docs = self._service_builder(
+                "docs", "v1", credentials=credentials, cache_discovery=False
+            )
+            response = (
+                docs.documents()
+                .batchUpdate(
+                    documentId=resource.id,
+                    body={
+                        "requests": requests,
+                        "writeControl": {"requiredRevisionId": required_revision_id},
+                    },
+                )
+                .execute()
+            )
+            revision = response.get("writeControl", {}).get("requiredRevisionId")
+            if revision:
+                return str(revision)
+            return str(self._get_native_document(resource).get("revisionId", ""))
+        except HttpError as error:
+            status = getattr(error.resp, "status", None)
+            message = str(error).casefold()
+            if status in (400, 409) and "revision" in message:
+                raise WorkspaceAdapterError(
+                    "document_revision_conflict",
+                    "The document changed after inspection; inspect it again before editing.",
+                    409,
+                ) from error
+            raise map_google_error(error) from error
+        except GoogleAuthError as error:
+            raise map_google_error(error) from error
+        except OSError as error:
+            raise WorkspaceAdapterError(
+                "credentials_unavailable",
+                "Application Default Credentials are not available to the runtime.",
+                503,
+            ) from error
+
+    def _get_native_document(self, resource: WorkspaceResource) -> dict[str, Any]:
+        if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+            raise WorkspaceAdapterError(
+                "resource_type_invalid",
+                "The requested resource is not a native Google Doc.",
+                422,
+            )
+        try:
+            credentials = self._credentials_factory(self._settings)
+            docs = self._service_builder(
+                "docs", "v1", credentials=credentials, cache_discovery=False
+            )
+            return (
+                docs.documents()
+                .get(documentId=resource.id, includeTabsContent=True)
                 .execute()
             )
         except (GoogleAuthError, HttpError) as error:
@@ -161,3 +326,340 @@ def _bounded_text(chunks: Iterable[str], limit: int) -> tuple[str, bool]:
         if remaining == 0:
             return "".join(parts), next(iterator, None) is not None
     return "".join(parts), False
+
+
+def _tab_structures(document: dict[str, Any]) -> Iterator[TabStructure]:
+    for tab in document.get("tabs", []):
+        yield from _one_tab_structures(tab)
+
+
+def _one_tab_structures(tab: dict[str, Any]) -> Iterator[TabStructure]:
+    properties = tab.get("tabProperties", {})
+    tab_id = str(properties.get("tabId", ""))
+    document_tab = tab.get("documentTab", {})
+    paragraphs, tables = _parse_content(
+        document_tab.get("body", {}).get("content", []), tab_id=tab_id
+    )
+    yield TabStructure(
+        tab_id=tab_id,
+        title=str(properties.get("title", "")),
+        paragraphs=paragraphs,
+        tables=tables,
+    )
+    for child in tab.get("childTabs", []):
+        yield from _one_tab_structures(child)
+
+
+def _parse_content(
+    content: Iterable[dict[str, Any]], *, tab_id: str | None, segment_id: str = ""
+) -> tuple[list[ParagraphSummary], list[TableSummary]]:
+    paragraphs: list[ParagraphSummary] = []
+    tables: list[TableSummary] = []
+    for element in content:
+        paragraph = element.get("paragraph")
+        if paragraph:
+            paragraphs.append(_paragraph_summary(element, paragraph, tab_id, segment_id))
+        table = element.get("table")
+        if table:
+            cells: list[TableCellSummary] = []
+            rows = table.get("tableRows", [])[:100]
+            column_count = 0
+            for row_index, row in enumerate(rows):
+                row_cells = row.get("tableCells", [])[:50]
+                column_count = max(column_count, len(row_cells))
+                for column_index, cell in enumerate(row_cells):
+                    cell_paragraphs, nested_tables = _parse_content(
+                        cell.get("content", []), tab_id=tab_id, segment_id=segment_id
+                    )
+                    paragraphs.extend(cell_paragraphs)
+                    tables.extend(nested_tables)
+                    cells.append(
+                        TableCellSummary(
+                            row=row_index,
+                            column=column_index,
+                            start_index=int(cell.get("startIndex", 0)),
+                            end_index=int(cell.get("endIndex", 0)),
+                            text="".join(item.text for item in cell_paragraphs)[:10000],
+                        )
+                    )
+            tables.append(
+                TableSummary(
+                    start_index=int(element.get("startIndex", 0)),
+                    end_index=int(element.get("endIndex", 0)),
+                    rows=len(rows),
+                    columns=column_count,
+                    cells=cells,
+                    segment_id=segment_id,
+                    tab_id=tab_id,
+                )
+            )
+    return paragraphs[:1000], tables[:100]
+
+
+def _paragraph_summary(
+    element: dict[str, Any],
+    paragraph: dict[str, Any],
+    tab_id: str | None,
+    segment_id: str,
+) -> ParagraphSummary:
+    elements = paragraph.get("elements", [])
+    text = "".join(
+        str(item.get("textRun", {}).get("content", "")) for item in elements
+    )[:10000]
+    style = paragraph.get("paragraphStyle", {})
+    first_text_style = next(
+        (
+            item.get("textRun", {}).get("textStyle", {})
+            for item in elements
+            if item.get("textRun")
+        ),
+        {},
+    )
+    return ParagraphSummary(
+        start_index=int(element.get("startIndex", 0)),
+        end_index=int(element.get("endIndex", 0)),
+        text=text,
+        named_style_type=style.get("namedStyleType"),
+        alignment=style.get("alignment"),
+        bullet=bool(paragraph.get("bullet")),
+        segment_id=segment_id,
+        tab_id=tab_id,
+        text_style=_text_style_summary(first_text_style),
+    )
+
+
+def _text_style_summary(style: dict[str, Any]) -> TextStyleSummary | None:
+    if not style:
+        return None
+    return TextStyleSummary(
+        bold=style.get("bold"),
+        italic=style.get("italic"),
+        underline=style.get("underline"),
+        font_size=style.get("fontSize", {}).get("magnitude"),
+        font_family=style.get("weightedFontFamily", {}).get("fontFamily"),
+        foreground_color=_color_hex(style.get("foregroundColor")),
+    )
+
+
+def _segment_structures(segments: dict[str, Any]) -> list[SegmentSummary]:
+    result: list[SegmentSummary] = []
+    for segment_id, segment in list(segments.items())[:20]:
+        paragraphs, _ = _parse_content(
+            segment.get("content", []), tab_id=None, segment_id=segment_id
+        )
+        result.append(SegmentSummary(segment_id=segment_id, paragraphs=paragraphs))
+    return result
+
+
+def _tab_segment_structures(
+    tab: dict[str, Any],
+) -> tuple[list[SegmentSummary], list[SegmentSummary]]:
+    document_tab = tab.get("documentTab", {})
+    headers = _segment_structures(document_tab.get("headers", {}))
+    footers = _segment_structures(document_tab.get("footers", {}))
+    for child in tab.get("childTabs", []):
+        child_headers, child_footers = _tab_segment_structures(child)
+        headers.extend(child_headers)
+        footers.extend(child_footers)
+    return headers, footers
+
+
+def _tab_image_count(tab: dict[str, Any]) -> int:
+    document_tab = tab.get("documentTab", {})
+    return (
+        len(document_tab.get("inlineObjects", {}))
+        + len(document_tab.get("positionedObjects", {}))
+        + sum(_tab_image_count(child) for child in tab.get("childTabs", []))
+    )
+
+
+def _section_summaries(document: dict[str, Any]) -> Iterator[SectionSummary]:
+    top_level = document.get("body", {}).get("content", [])
+    yield from _sections_from_content(top_level, tab_id=None)
+    for tab in document.get("tabs", []):
+        yield from _tab_section_summaries(tab)
+
+
+def _tab_section_summaries(tab: dict[str, Any]) -> Iterator[SectionSummary]:
+    tab_id = str(tab.get("tabProperties", {}).get("tabId", "")) or None
+    content = tab.get("documentTab", {}).get("body", {}).get("content", [])
+    yield from _sections_from_content(content, tab_id=tab_id)
+    for child in tab.get("childTabs", []):
+        yield from _tab_section_summaries(child)
+
+
+def _sections_from_content(
+    content: Iterable[dict[str, Any]], *, tab_id: str | None
+) -> Iterator[SectionSummary]:
+    for element in content:
+        section_break = element.get("sectionBreak")
+        if section_break is not None:
+            yield SectionSummary(
+                start_index=int(element.get("startIndex", 0)),
+                end_index=int(element.get("endIndex", 0)),
+                tab_id=tab_id,
+                section_style=_safe_document_style(section_break.get("sectionStyle", {})),
+            )
+
+
+def _safe_document_style(style: dict[str, Any]) -> dict[str, object]:
+    allowed = (
+        "background",
+        "pageSize",
+        "marginTop",
+        "marginBottom",
+        "marginLeft",
+        "marginRight",
+        "useFirstPageHeaderFooter",
+        "flipPageOrientation",
+        "sectionType",
+        "columnProperties",
+        "pageNumberStart",
+    )
+    return {key: style[key] for key in allowed if key in style}
+
+
+def _color_hex(color: dict[str, Any] | None) -> str | None:
+    rgb = (color or {}).get("color", {}).get("rgbColor", {})
+    if not rgb:
+        return None
+    values = [round(float(rgb.get(key, 0)) * 255) for key in ("red", "green", "blue")]
+    return "#" + "".join(f"{value:02X}" for value in values)
+
+
+def _location(index: int, *, segment_id: str = "", tab_id: str | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"index": index}
+    if segment_id:
+        result["segmentId"] = segment_id
+    if tab_id:
+        result["tabId"] = tab_id
+    return result
+
+
+def _range(operation: Any) -> dict[str, Any]:
+    if operation.end_index <= operation.start_index:
+        raise WorkspaceAdapterError(
+            "document_operation_invalid",
+            "A document range must end after it starts.",
+            422,
+        )
+    result = {
+        "startIndex": operation.start_index,
+        "endIndex": operation.end_index,
+    }
+    if operation.segment_id:
+        result["segmentId"] = operation.segment_id
+    if operation.tab_id:
+        result["tabId"] = operation.tab_id
+    return result
+
+
+def _table_cell_location(operation: Any) -> dict[str, Any]:
+    start = _location(operation.table_start_index, tab_id=operation.tab_id)
+    return {
+        "tableStartLocation": start,
+        "rowIndex": operation.row_index,
+        "columnIndex": operation.column_index,
+    }
+
+
+def _rgb_color(value: str) -> dict[str, Any]:
+    return {
+        "color": {
+            "rgbColor": {
+                "red": int(value[1:3], 16) / 255,
+                "green": int(value[3:5], 16) / 255,
+                "blue": int(value[5:7], 16) / 255,
+            }
+        }
+    }
+
+
+def _operation_requests(operation: DocumentEditOperation) -> list[dict[str, Any]]:
+    if isinstance(operation, InsertTextOperation):
+        return [{"insertText": {"location": _location(operation.index, segment_id=operation.segment_id, tab_id=operation.tab_id), "text": operation.text}}]
+    if isinstance(operation, DeleteContentOperation):
+        return [{"deleteContentRange": {"range": _range(operation)}}]
+    if isinstance(operation, ReplaceAllTextOperation):
+        request: dict[str, Any] = {
+            "containsText": {"text": operation.find, "matchCase": operation.match_case},
+            "replaceText": operation.replace,
+        }
+        if operation.tab_ids:
+            request["tabsCriteria"] = {"tabIds": operation.tab_ids}
+        return [{"replaceAllText": request}]
+    if isinstance(operation, ParagraphStyleOperation):
+        style: dict[str, Any] = {}
+        fields: list[str] = []
+        for field, api_field in (("named_style_type", "namedStyleType"), ("alignment", "alignment")):
+            value = getattr(operation, field)
+            if value is not None:
+                style[api_field] = value
+                fields.append(api_field)
+        for field, api_field in (("space_above", "spaceAbove"), ("space_below", "spaceBelow")):
+            value = getattr(operation, field)
+            if value is not None:
+                style[api_field] = {"magnitude": value, "unit": "PT"}
+                fields.append(api_field)
+        if not fields:
+            raise WorkspaceAdapterError("document_operation_invalid", "At least one paragraph style is required.", 422)
+        return [{"updateParagraphStyle": {"range": _range(operation), "paragraphStyle": style, "fields": ",".join(fields)}}]
+    if isinstance(operation, TextStyleOperation):
+        style = {}
+        fields = []
+        for field in ("bold", "italic", "underline"):
+            value = getattr(operation, field)
+            if value is not None:
+                style[field] = value
+                fields.append(field)
+        if operation.font_size is not None:
+            style["fontSize"] = {"magnitude": operation.font_size, "unit": "PT"}
+            fields.append("fontSize")
+        if operation.font_family is not None:
+            style["weightedFontFamily"] = {"fontFamily": operation.font_family}
+            fields.append("weightedFontFamily")
+        if operation.foreground_color is not None:
+            style["foregroundColor"] = _rgb_color(operation.foreground_color)
+            fields.append("foregroundColor")
+        if not fields:
+            raise WorkspaceAdapterError("document_operation_invalid", "At least one text style is required.", 422)
+        return [{"updateTextStyle": {"range": _range(operation), "textStyle": style, "fields": ",".join(fields)}}]
+    if isinstance(operation, ListOperation):
+        preset = "BULLET_DISC_CIRCLE_SQUARE" if operation.list_type == "bullet" else "NUMBERED_DECIMAL_NESTED"
+        return [{"createParagraphBullets": {"range": _range(operation), "bulletPreset": preset}}]
+    if isinstance(operation, InsertTableOperation):
+        return [{"insertTable": {"rows": operation.rows, "columns": operation.columns, "location": _location(operation.index, segment_id=operation.segment_id, tab_id=operation.tab_id)}}]
+    if isinstance(operation, InsertTableRowOperation):
+        return [{"insertTableRow": {"tableCellLocation": _table_cell_location(operation), "insertBelow": operation.insert_below}}]
+    if isinstance(operation, InsertTableColumnOperation):
+        return [{"insertTableColumn": {"tableCellLocation": _table_cell_location(operation), "insertRight": operation.insert_right}}]
+    if isinstance(operation, DeleteTableRowOperation):
+        return [{"deleteTableRow": {"tableCellLocation": _table_cell_location(operation)}}]
+    if isinstance(operation, UpdateTableCellOperation):
+        return [
+            {"deleteContentRange": {"range": _range(operation)}},
+            {"insertText": {"location": _location(operation.start_index, segment_id=operation.segment_id, tab_id=operation.tab_id), "text": operation.text}},
+        ]
+    if isinstance(operation, TableCellStyleOperation):
+        style = {}
+        fields = []
+        if operation.background_color:
+            style["backgroundColor"] = _rgb_color(operation.background_color)
+            fields.append("backgroundColor")
+        if operation.vertical_alignment:
+            style["contentAlignment"] = operation.vertical_alignment
+            fields.append("contentAlignment")
+        if not fields:
+            raise WorkspaceAdapterError("document_operation_invalid", "At least one table cell style is required.", 422)
+        return [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": _table_cell_location(operation), "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": style, "fields": ",".join(fields)}}]
+    if isinstance(operation, (CreateHeaderOperation, CreateFooterOperation)):
+        payload: dict[str, Any] = {
+            "type": operation.header_type if isinstance(operation, CreateHeaderOperation) else operation.footer_type
+        }
+        if operation.section_index is not None:
+            payload["sectionBreakLocation"] = _location(
+                operation.section_index, tab_id=operation.tab_id
+            )
+        kind = "createHeader" if isinstance(operation, CreateHeaderOperation) else "createFooter"
+        return [{kind: payload}]
+    raise WorkspaceAdapterError("document_operation_invalid", "The document operation is not supported.", 422)

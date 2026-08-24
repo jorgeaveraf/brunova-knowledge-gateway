@@ -253,6 +253,121 @@ class GoogleWorkspaceAdapter:
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
 
+    def find_resources(self, *, name: str, mime_type: str | None = None) -> list[WorkspaceResource]:
+        """Resolve exact Drive names while keeping raw identifiers adapter-internal."""
+
+        escaped_name = name.replace("\\", "\\\\").replace("'", "\\'")
+        query = f"name = '{escaped_name}' and trashed=false"
+        if mime_type:
+            escaped_mime = mime_type.replace("'", "\\'")
+            query += f" and mimeType = '{escaped_mime}'"
+        try:
+            response = (
+                self._drive()
+                .files()
+                .list(
+                    q=query,
+                    spaces="drive",
+                    pageSize=100,
+                    fields="files(id,name,mimeType,modifiedTime,driveId,parents)",
+                    includeItemsFromAllDrives=True,
+                    supportsAllDrives=True,
+                    orderBy="modifiedTime desc",
+                )
+                .execute()
+            )
+            return [self.get_resource(str(item["id"])) for item in response.get("files", [])]
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def logical_path(self, resource: WorkspaceResource) -> str:
+        """Build a bounded display path for disambiguation; never returned publicly."""
+
+        try:
+            drive = self._drive()
+            names = [resource.name]
+            pending = list(resource.parent_ids[:1])
+            visited: set[str] = set()
+            while pending and len(names) <= self._settings.workspace_source_max_depth:
+                parent_id = pending.pop(0)
+                if parent_id in visited:
+                    break
+                visited.add(parent_id)
+                parent = self._get_file_metadata(drive, parent_id)
+                parent_name = str(parent.get("name", ""))
+                if parent_name:
+                    names.append(parent_name)
+                pending.extend(parent.get("parents", [])[:1])
+            return "/".join(reversed(names))
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def copy_resource(
+        self,
+        *,
+        resource: WorkspaceResource,
+        name: str,
+        destination: WorkspaceResource,
+    ) -> WorkspaceResource:
+        """Create a native Drive copy in one explicitly authorized folder."""
+
+        if destination.mime_type != GOOGLE_FOLDER_MIME_TYPE:
+            raise WorkspaceAdapterError(
+                "mutation_destination_invalid",
+                "The copy destination must be a Google Drive folder.",
+                422,
+            )
+        try:
+            metadata = (
+                self._drive()
+                .files()
+                .copy(
+                    fileId=resource.id,
+                    body={"name": name, "parents": [destination.id]},
+                    fields="id,name,mimeType,modifiedTime,driveId,parents",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", name),
+                mime_type=metadata.get("mimeType", resource.mime_type),
+                modified_time=metadata.get("modifiedTime", ""),
+                drive_id=metadata.get("driveId", destination.drive_id),
+                ancestor_ids=(destination.id, *destination.ancestor_ids),
+                parent_ids=tuple(metadata.get("parents", [destination.id])),
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def rename_resource(self, *, resource: WorkspaceResource, name: str) -> WorkspaceResource:
+        """Rename one authorized Drive artifact without moving it."""
+
+        try:
+            metadata = (
+                self._drive()
+                .files()
+                .update(
+                    fileId=resource.id,
+                    body={"name": name},
+                    fields="id,name,mimeType,modifiedTime,driveId,parents",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", name),
+                mime_type=metadata.get("mimeType", resource.mime_type),
+                modified_time=metadata.get("modifiedTime", resource.modified_time),
+                drive_id=metadata.get("driveId", resource.drive_id),
+                ancestor_ids=resource.ancestor_ids,
+                parent_ids=tuple(metadata.get("parents", resource.parent_ids)),
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
     def create_document(self, *, source: AllowedSource, name: str) -> WorkspaceResource:
         """Create only a native Google Doc at the approved source root."""
 

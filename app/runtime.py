@@ -8,6 +8,7 @@ from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.adapters.google_cloud_logging import CloudLoggingOperationHistoryStore
+from app.artifact_refs import ArtifactReferenceCodec
 from app.config.settings import Settings, get_settings
 from app.policies.source_access import SourceAccessPolicy
 from app.policies.content_mutation import ContentMutationPolicy
@@ -34,6 +35,7 @@ class KnowledgeRuntime:
     proposal_store: SourceProposalStore
     mutation_policy: ContentMutationPolicy
     operation_history_store: OperationHistoryStore | None = None
+    artifact_reference_codec: ArtifactReferenceCodec | None = None
 
 
 @lru_cache
@@ -62,6 +64,7 @@ def get_runtime_gateway() -> KnowledgeRuntime:
                 )
             ),
             mutation_policy=ContentMutationPolicy(registry, source_policy),
+            artifact_reference_codec=ArtifactReferenceCodec.from_environment(),
             operation_history_store=CloudLoggingOperationHistoryStore(),
         )
     except ValueError as error:
