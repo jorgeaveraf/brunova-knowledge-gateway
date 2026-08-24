@@ -19,6 +19,25 @@ sources:
       delete: false
       share: false
       convert: false
+  - id: legacy_archive
+    name: 98 Legacy
+    system: google_workspace
+    location_type: folder
+    location_id: 1QZmH-LJY6VIm8ztCh2w6SMGhUi8o3g_b
+    classification: management_only
+    owner:
+      - Jorge
+      - Nat
+    status: active
+    source_type: archive_destination
+    capabilities:
+      read: false
+      create: false
+      update: false
+      move: true
+      delete: false
+      share: false
+      convert: false
   - id: brunova_template
     name: Brunova Template
     system: google_workspace
@@ -50,9 +69,9 @@ sources:
     source_type: knowledge_source
     capabilities:
       read: true
-      create: false
-      update: false
-      move: false
+      create: true
+      update: true
+      move: true
       delete: false
       share: false
-      convert: false
+      convert: true

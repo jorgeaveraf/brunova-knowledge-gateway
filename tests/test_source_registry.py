@@ -1,6 +1,11 @@
 import pytest
 
-from app.source_registry import Classification, SourceRegistry, SourceRegistryMetadata
+from app.source_registry import (
+    Classification,
+    SourceRegistry,
+    SourceRegistryMetadata,
+    SourceType,
+)
 
 
 def write_registry(tmp_path, *, classification="management_only", status="active"):
@@ -90,12 +95,13 @@ def test_capability_matrix_defaults_fail_closed_for_mutations(tmp_path):
     assert source.capabilities.convert is False
 
 
-def test_versioned_registry_enables_full_crud_only_for_approved_template():
+def test_versioned_registry_matches_approved_source_capabilities():
     registry = SourceRegistry.load("app/config/sources.yaml")
 
     career_ops = registry.get("career_ops").capabilities
     template = registry.get("brunova_template").capabilities
     brunova_management = registry.get("brunova_management").capabilities
+    legacy_archive = registry.get("legacy_archive")
 
     assert career_ops.model_dump() == {
         "read": True,
@@ -109,9 +115,19 @@ def test_versioned_registry_enables_full_crud_only_for_approved_template():
     assert all(template.model_dump().values())
     assert brunova_management.model_dump() == {
         "read": True,
+        "create": True,
+        "update": True,
+        "move": True,
+        "delete": False,
+        "share": False,
+        "convert": True,
+    }
+    assert legacy_archive.source_type == SourceType.ARCHIVE_DESTINATION
+    assert legacy_archive.capabilities.model_dump() == {
+        "read": False,
         "create": False,
         "update": False,
-        "move": False,
+        "move": True,
         "delete": False,
         "share": False,
         "convert": False,
