@@ -345,7 +345,7 @@ def test_structured_request_allowlist_covers_text_lists_tables_and_segments():
         CreateFooterOperation(operation="create_footer"),
         InsertTextOperation(
             operation="insert_text_at_index",
-            index=1,
+            index=0,
             text="Header",
             segment_id="header-1",
         ),
@@ -371,7 +371,16 @@ def test_structured_request_allowlist_covers_text_lists_tables_and_segments():
         "createFooter",
         "insertText",
     ]
-    assert _operation_requests(operations[-1])[0]["insertText"]["location"]["segmentId"] == "header-1"
+    assert _operation_requests(operations[-1])[0]["insertText"]["location"] == {
+        "index": 0,
+        "segmentId": "header-1",
+    }
+
+    with pytest.raises(WorkspaceAdapterError) as body_zero:
+        _operation_requests(
+            InsertTextOperation(operation="insert_text_at_index", index=0, text="invalid")
+        )
+    assert body_zero.value.code == "document_operation_invalid"
 
 
 def test_structured_edit_fails_safely_on_stale_revision():

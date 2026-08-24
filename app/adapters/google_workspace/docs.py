@@ -528,6 +528,12 @@ def _color_hex(color: dict[str, Any] | None) -> str | None:
 
 
 def _location(index: int, *, segment_id: str = "", tab_id: str | None = None) -> dict[str, Any]:
+    if index == 0 and not segment_id:
+        raise WorkspaceAdapterError(
+            "document_operation_invalid",
+            "Index zero is valid only inside a header, footer, or footnote segment.",
+            422,
+        )
     result: dict[str, Any] = {"index": index}
     if segment_id:
         result["segmentId"] = segment_id
@@ -541,6 +547,12 @@ def _range(operation: Any) -> dict[str, Any]:
         raise WorkspaceAdapterError(
             "document_operation_invalid",
             "A document range must end after it starts.",
+            422,
+        )
+    if operation.start_index == 0 and not operation.segment_id:
+        raise WorkspaceAdapterError(
+            "document_operation_invalid",
+            "A range starting at zero requires a header, footer, or footnote segment.",
             422,
         )
     result = {

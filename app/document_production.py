@@ -105,15 +105,15 @@ class DocumentStructure(BaseModel):
 
 
 class RangeOperation(BaseModel):
-    start_index: int = Field(ge=1)
-    end_index: int = Field(gt=1)
+    start_index: int = Field(ge=0)
+    end_index: int = Field(gt=0)
     segment_id: str = ""
     tab_id: str | None = None
 
 
 class InsertTextOperation(BaseModel):
     operation: Literal["insert_text_at_index"]
-    index: int = Field(ge=1)
+    index: int = Field(ge=0)
     text: str = Field(min_length=1, max_length=10000)
     segment_id: str = ""
     tab_id: str | None = None
