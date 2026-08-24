@@ -1,6 +1,7 @@
 .git
 .env*
 .venv
+.test-venv
 .pytest_cache
 tests
 **/__pycache__

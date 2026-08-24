@@ -1,0 +1,11 @@
+.git
+.gitignore
+.gcloudignore
+.env*
+!.env.example
+.venv/
+.test-venv/
+.pytest_cache/
+tests/
+**/__pycache__/
+**/*.py[cod]
