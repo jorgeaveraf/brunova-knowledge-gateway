@@ -11,6 +11,7 @@ from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
 from app.adapters.google_workspace.models import GoogleDocContent, WorkspaceResource
 from app.config.settings import Settings
+from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
     CreateFooterOperation,
     CreateHeaderOperation,
@@ -143,27 +144,34 @@ class GoogleDocsAdapter:
         *,
         artifact_ref: str,
         source_id: str,
+        reference_codec: ArtifactReferenceCodec,
     ) -> DocumentStructure:
         """Return a bounded, allowlisted structural view with actionable indexes."""
 
         document = self._get_native_document(resource)
-        tabs = list(_tab_structures(document))
-        if not tabs:
-            paragraphs, tables = _parse_content(
-                document.get("body", {}).get("content", []), tab_id=None
+        tabs = list(
+            _tab_structures(
+                document,
+                reference_codec=reference_codec,
+                source_id=source_id,
+                artifact_id=resource.id,
             )
-            tabs = [
-                TabStructure(
-                    tab_id="",
-                    title=document.get("title", resource.name),
-                    paragraphs=paragraphs,
-                    tables=tables,
-                )
-            ]
-        headers = _segment_structures(document.get("headers", {}))
-        footers = _segment_structures(document.get("footers", {}))
+        )
+        if not tabs:
+            raise WorkspaceAdapterError(
+                "document_tabs_unavailable",
+                "Google Docs did not return tab metadata for this document.",
+                502,
+            )
+        headers: list[SegmentSummary] = []
+        footers: list[SegmentSummary] = []
         for tab in document.get("tabs", []):
-            tab_headers, tab_footers = _tab_segment_structures(tab)
+            tab_headers, tab_footers = _tab_segment_structures(
+                tab,
+                reference_codec=reference_codec,
+                source_id=source_id,
+                artifact_id=resource.id,
+            )
             headers.extend(tab_headers)
             footers.extend(tab_footers)
         all_text = "".join(
@@ -184,7 +192,14 @@ class GoogleDocsAdapter:
             tabs=tabs,
             headers=headers,
             footers=footers,
-            sections=list(_section_summaries(document)),
+            sections=list(
+                _section_summaries(
+                    document,
+                    reference_codec=reference_codec,
+                    source_id=source_id,
+                    artifact_id=resource.id,
+                )
+            ),
             image_count=len(document.get("inlineObjects", {}))
             + len(document.get("positionedObjects", {}))
             + sum(_tab_image_count(tab) for tab in document.get("tabs", [])),
@@ -199,6 +214,7 @@ class GoogleDocsAdapter:
         *,
         required_revision_id: str,
         operations: list[DocumentEditOperation],
+        tab_id_resolver: Callable[[str], str],
     ) -> str:
         """Execute semantic requests with optimistic concurrency protection."""
 
@@ -210,7 +226,82 @@ class GoogleDocsAdapter:
             )
         requests: list[dict[str, Any]] = []
         for operation in operations:
-            requests.extend(_operation_requests(operation))
+            requests.extend(
+                _operation_requests(operation, tab_id_resolver=tab_id_resolver)
+            )
+        return self._batch_update(
+            resource,
+            requests=requests,
+            required_revision_id=required_revision_id,
+        )
+
+    def create_tab(
+        self,
+        resource: WorkspaceResource,
+        *,
+        title: str,
+        required_revision_id: str,
+        index: int | None = None,
+        parent_tab_id: str | None = None,
+    ) -> str:
+        properties: dict[str, Any] = {"title": title}
+        if index is not None:
+            properties["index"] = index
+        if parent_tab_id is not None:
+            properties["parentTabId"] = parent_tab_id
+        return self._batch_update(
+            resource,
+            requests=[{"addDocumentTab": {"tabProperties": properties}}],
+            required_revision_id=required_revision_id,
+        )
+
+    def rename_tab(
+        self,
+        resource: WorkspaceResource,
+        *,
+        tab_id: str,
+        title: str,
+        required_revision_id: str,
+    ) -> str:
+        return self._batch_update(
+            resource,
+            requests=[
+                {
+                    "updateDocumentTabProperties": {
+                        "tabProperties": {"tabId": tab_id, "title": title},
+                        "fields": "title",
+                    }
+                }
+            ],
+            required_revision_id=required_revision_id,
+        )
+
+    def delete_tab(
+        self,
+        resource: WorkspaceResource,
+        *,
+        tab_id: str,
+        required_revision_id: str,
+    ) -> str:
+        return self._batch_update(
+            resource,
+            requests=[{"deleteTab": {"tabId": tab_id}}],
+            required_revision_id=required_revision_id,
+        )
+
+    def _batch_update(
+        self,
+        resource: WorkspaceResource,
+        *,
+        requests: list[dict[str, Any]],
+        required_revision_id: str,
+    ) -> str:
+        if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+            raise WorkspaceAdapterError(
+                "resource_type_invalid",
+                "The requested resource is not a native Google Doc.",
+                422,
+            )
         try:
             credentials = self._credentials_factory(self._settings)
             docs = self._service_builder(
@@ -237,7 +328,7 @@ class GoogleDocsAdapter:
             if status in (400, 409) and "revision" in message:
                 raise WorkspaceAdapterError(
                     "document_revision_conflict",
-                    "The document changed after inspection; inspect it again before editing.",
+                    "The document changed after inspection; inspect it again before mutating it.",
                     409,
                 ) from error
             raise map_google_error(error) from error
@@ -328,37 +419,79 @@ def _bounded_text(chunks: Iterable[str], limit: int) -> tuple[str, bool]:
     return "".join(parts), False
 
 
-def _tab_structures(document: dict[str, Any]) -> Iterator[TabStructure]:
+def _tab_structures(
+    document: dict[str, Any],
+    *,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+) -> Iterator[TabStructure]:
     for tab in document.get("tabs", []):
-        yield from _one_tab_structures(tab)
+        yield from _one_tab_structures(
+            tab,
+            reference_codec=reference_codec,
+            source_id=source_id,
+            artifact_id=artifact_id,
+        )
 
 
-def _one_tab_structures(tab: dict[str, Any]) -> Iterator[TabStructure]:
+def _one_tab_structures(
+    tab: dict[str, Any],
+    *,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+) -> Iterator[TabStructure]:
     properties = tab.get("tabProperties", {})
     tab_id = str(properties.get("tabId", ""))
+    if not tab_id:
+        raise WorkspaceAdapterError(
+            "document_tab_metadata_invalid",
+            "Google Docs returned a tab without an immutable identifier.",
+            502,
+        )
+    tab_ref = reference_codec.encode_tab(
+        source_id=source_id, artifact_id=artifact_id, tab_id=tab_id
+    )
+    parent_id = str(properties.get("parentTabId", ""))
+    parent_ref = (
+        reference_codec.encode_tab(
+            source_id=source_id, artifact_id=artifact_id, tab_id=parent_id
+        )
+        if parent_id
+        else None
+    )
     document_tab = tab.get("documentTab", {})
     paragraphs, tables = _parse_content(
-        document_tab.get("body", {}).get("content", []), tab_id=tab_id
+        document_tab.get("body", {}).get("content", []), tab_ref=tab_ref
     )
     yield TabStructure(
-        tab_id=tab_id,
+        tab_ref=tab_ref,
         title=str(properties.get("title", "")),
+        index=int(properties.get("index", 0)),
+        parent_tab_ref=parent_ref,
+        nesting_level=int(properties.get("nestingLevel", 0)),
         paragraphs=paragraphs,
         tables=tables,
     )
     for child in tab.get("childTabs", []):
-        yield from _one_tab_structures(child)
+        yield from _one_tab_structures(
+            child,
+            reference_codec=reference_codec,
+            source_id=source_id,
+            artifact_id=artifact_id,
+        )
 
 
 def _parse_content(
-    content: Iterable[dict[str, Any]], *, tab_id: str | None, segment_id: str = ""
+    content: Iterable[dict[str, Any]], *, tab_ref: str | None, segment_id: str = ""
 ) -> tuple[list[ParagraphSummary], list[TableSummary]]:
     paragraphs: list[ParagraphSummary] = []
     tables: list[TableSummary] = []
     for element in content:
         paragraph = element.get("paragraph")
         if paragraph:
-            paragraphs.append(_paragraph_summary(element, paragraph, tab_id, segment_id))
+            paragraphs.append(_paragraph_summary(element, paragraph, tab_ref, segment_id))
         table = element.get("table")
         if table:
             cells: list[TableCellSummary] = []
@@ -369,7 +502,7 @@ def _parse_content(
                 column_count = max(column_count, len(row_cells))
                 for column_index, cell in enumerate(row_cells):
                     cell_paragraphs, nested_tables = _parse_content(
-                        cell.get("content", []), tab_id=tab_id, segment_id=segment_id
+                        cell.get("content", []), tab_ref=tab_ref, segment_id=segment_id
                     )
                     paragraphs.extend(cell_paragraphs)
                     tables.extend(nested_tables)
@@ -390,7 +523,7 @@ def _parse_content(
                     columns=column_count,
                     cells=cells,
                     segment_id=segment_id,
-                    tab_id=tab_id,
+                    tab_ref=tab_ref,
                 )
             )
     return paragraphs[:1000], tables[:100]
@@ -399,7 +532,7 @@ def _parse_content(
 def _paragraph_summary(
     element: dict[str, Any],
     paragraph: dict[str, Any],
-    tab_id: str | None,
+    tab_ref: str | None,
     segment_id: str,
 ) -> ParagraphSummary:
     elements = paragraph.get("elements", [])
@@ -423,7 +556,7 @@ def _paragraph_summary(
         alignment=style.get("alignment"),
         bullet=bool(paragraph.get("bullet")),
         segment_id=segment_id,
-        tab_id=tab_id,
+        tab_ref=tab_ref,
         text_style=_text_style_summary(first_text_style),
     )
 
@@ -441,24 +574,49 @@ def _text_style_summary(style: dict[str, Any]) -> TextStyleSummary | None:
     )
 
 
-def _segment_structures(segments: dict[str, Any]) -> list[SegmentSummary]:
+def _segment_structures(
+    segments: dict[str, Any], *, tab_ref: str | None
+) -> list[SegmentSummary]:
     result: list[SegmentSummary] = []
     for segment_id, segment in list(segments.items())[:20]:
         paragraphs, _ = _parse_content(
-            segment.get("content", []), tab_id=None, segment_id=segment_id
+            segment.get("content", []), tab_ref=tab_ref, segment_id=segment_id
         )
-        result.append(SegmentSummary(segment_id=segment_id, paragraphs=paragraphs))
+        result.append(
+            SegmentSummary(
+                segment_id=segment_id, tab_ref=tab_ref, paragraphs=paragraphs
+            )
+        )
     return result
 
 
 def _tab_segment_structures(
     tab: dict[str, Any],
+    *,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
 ) -> tuple[list[SegmentSummary], list[SegmentSummary]]:
+    tab_id = str(tab.get("tabProperties", {}).get("tabId", ""))
+    if not tab_id:
+        raise WorkspaceAdapterError(
+            "document_tab_metadata_invalid",
+            "Google Docs returned a tab without an immutable identifier.",
+            502,
+        )
+    tab_ref = reference_codec.encode_tab(
+        source_id=source_id, artifact_id=artifact_id, tab_id=tab_id
+    )
     document_tab = tab.get("documentTab", {})
-    headers = _segment_structures(document_tab.get("headers", {}))
-    footers = _segment_structures(document_tab.get("footers", {}))
+    headers = _segment_structures(document_tab.get("headers", {}), tab_ref=tab_ref)
+    footers = _segment_structures(document_tab.get("footers", {}), tab_ref=tab_ref)
     for child in tab.get("childTabs", []):
-        child_headers, child_footers = _tab_segment_structures(child)
+        child_headers, child_footers = _tab_segment_structures(
+            child,
+            reference_codec=reference_codec,
+            source_id=source_id,
+            artifact_id=artifact_id,
+        )
         headers.extend(child_headers)
         footers.extend(child_footers)
     return headers, footers
@@ -473,23 +631,52 @@ def _tab_image_count(tab: dict[str, Any]) -> int:
     )
 
 
-def _section_summaries(document: dict[str, Any]) -> Iterator[SectionSummary]:
-    top_level = document.get("body", {}).get("content", [])
-    yield from _sections_from_content(top_level, tab_id=None)
+def _section_summaries(
+    document: dict[str, Any],
+    *,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+) -> Iterator[SectionSummary]:
     for tab in document.get("tabs", []):
-        yield from _tab_section_summaries(tab)
+        yield from _tab_section_summaries(
+            tab,
+            reference_codec=reference_codec,
+            source_id=source_id,
+            artifact_id=artifact_id,
+        )
 
 
-def _tab_section_summaries(tab: dict[str, Any]) -> Iterator[SectionSummary]:
-    tab_id = str(tab.get("tabProperties", {}).get("tabId", "")) or None
+def _tab_section_summaries(
+    tab: dict[str, Any],
+    *,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+) -> Iterator[SectionSummary]:
+    tab_id = str(tab.get("tabProperties", {}).get("tabId", ""))
+    if not tab_id:
+        raise WorkspaceAdapterError(
+            "document_tab_metadata_invalid",
+            "Google Docs returned a tab without an immutable identifier.",
+            502,
+        )
+    tab_ref = reference_codec.encode_tab(
+        source_id=source_id, artifact_id=artifact_id, tab_id=tab_id
+    )
     content = tab.get("documentTab", {}).get("body", {}).get("content", [])
-    yield from _sections_from_content(content, tab_id=tab_id)
+    yield from _sections_from_content(content, tab_ref=tab_ref)
     for child in tab.get("childTabs", []):
-        yield from _tab_section_summaries(child)
+        yield from _tab_section_summaries(
+            child,
+            reference_codec=reference_codec,
+            source_id=source_id,
+            artifact_id=artifact_id,
+        )
 
 
 def _sections_from_content(
-    content: Iterable[dict[str, Any]], *, tab_id: str | None
+    content: Iterable[dict[str, Any]], *, tab_ref: str | None
 ) -> Iterator[SectionSummary]:
     for element in content:
         section_break = element.get("sectionBreak")
@@ -497,7 +684,7 @@ def _sections_from_content(
             yield SectionSummary(
                 start_index=int(element.get("startIndex", 0)),
                 end_index=int(element.get("endIndex", 0)),
-                tab_id=tab_id,
+                tab_ref=tab_ref,
                 section_style=_safe_document_style(section_break.get("sectionStyle", {})),
             )
 
@@ -542,7 +729,15 @@ def _location(index: int, *, segment_id: str = "", tab_id: str | None = None) ->
     return result
 
 
-def _range(operation: Any) -> dict[str, Any]:
+def _resolved_tab_id(
+    tab_ref: str | None, *, tab_id_resolver: Callable[[str], str]
+) -> str | None:
+    return tab_id_resolver(tab_ref) if tab_ref else None
+
+
+def _range(
+    operation: Any, *, tab_id_resolver: Callable[[str], str]
+) -> dict[str, Any]:
     if operation.end_index <= operation.start_index:
         raise WorkspaceAdapterError(
             "document_operation_invalid",
@@ -561,13 +756,19 @@ def _range(operation: Any) -> dict[str, Any]:
     }
     if operation.segment_id:
         result["segmentId"] = operation.segment_id
-    if operation.tab_id:
-        result["tabId"] = operation.tab_id
+    tab_id = _resolved_tab_id(operation.tab_ref, tab_id_resolver=tab_id_resolver)
+    if tab_id:
+        result["tabId"] = tab_id
     return result
 
 
-def _table_cell_location(operation: Any) -> dict[str, Any]:
-    start = _location(operation.table_start_index, tab_id=operation.tab_id)
+def _table_cell_location(
+    operation: Any, *, tab_id_resolver: Callable[[str], str]
+) -> dict[str, Any]:
+    start = _location(
+        operation.table_start_index,
+        tab_id=_resolved_tab_id(operation.tab_ref, tab_id_resolver=tab_id_resolver),
+    )
     return {
         "tableStartLocation": start,
         "rowIndex": operation.row_index,
@@ -587,18 +788,27 @@ def _rgb_color(value: str) -> dict[str, Any]:
     }
 
 
-def _operation_requests(operation: DocumentEditOperation) -> list[dict[str, Any]]:
+def _operation_requests(
+    operation: DocumentEditOperation,
+    *,
+    tab_id_resolver: Callable[[str], str] = lambda value: value,
+) -> list[dict[str, Any]]:
+    tab_id = _resolved_tab_id(
+        getattr(operation, "tab_ref", None), tab_id_resolver=tab_id_resolver
+    )
     if isinstance(operation, InsertTextOperation):
-        return [{"insertText": {"location": _location(operation.index, segment_id=operation.segment_id, tab_id=operation.tab_id), "text": operation.text}}]
+        return [{"insertText": {"location": _location(operation.index, segment_id=operation.segment_id, tab_id=tab_id), "text": operation.text}}]
     if isinstance(operation, DeleteContentOperation):
-        return [{"deleteContentRange": {"range": _range(operation)}}]
+        return [{"deleteContentRange": {"range": _range(operation, tab_id_resolver=tab_id_resolver)}}]
     if isinstance(operation, ReplaceAllTextOperation):
         request: dict[str, Any] = {
             "containsText": {"text": operation.find, "matchCase": operation.match_case},
             "replaceText": operation.replace,
         }
-        if operation.tab_ids:
-            request["tabsCriteria"] = {"tabIds": operation.tab_ids}
+        if operation.tab_refs:
+            request["tabsCriteria"] = {
+                "tabIds": [tab_id_resolver(item) for item in operation.tab_refs]
+            }
         return [{"replaceAllText": request}]
     if isinstance(operation, ParagraphStyleOperation):
         style: dict[str, Any] = {}
@@ -615,7 +825,7 @@ def _operation_requests(operation: DocumentEditOperation) -> list[dict[str, Any]
                 fields.append(api_field)
         if not fields:
             raise WorkspaceAdapterError("document_operation_invalid", "At least one paragraph style is required.", 422)
-        return [{"updateParagraphStyle": {"range": _range(operation), "paragraphStyle": style, "fields": ",".join(fields)}}]
+        return [{"updateParagraphStyle": {"range": _range(operation, tab_id_resolver=tab_id_resolver), "paragraphStyle": style, "fields": ",".join(fields)}}]
     if isinstance(operation, TextStyleOperation):
         style = {}
         fields = []
@@ -635,22 +845,22 @@ def _operation_requests(operation: DocumentEditOperation) -> list[dict[str, Any]
             fields.append("foregroundColor")
         if not fields:
             raise WorkspaceAdapterError("document_operation_invalid", "At least one text style is required.", 422)
-        return [{"updateTextStyle": {"range": _range(operation), "textStyle": style, "fields": ",".join(fields)}}]
+        return [{"updateTextStyle": {"range": _range(operation, tab_id_resolver=tab_id_resolver), "textStyle": style, "fields": ",".join(fields)}}]
     if isinstance(operation, ListOperation):
         preset = "BULLET_DISC_CIRCLE_SQUARE" if operation.list_type == "bullet" else "NUMBERED_DECIMAL_NESTED"
-        return [{"createParagraphBullets": {"range": _range(operation), "bulletPreset": preset}}]
+        return [{"createParagraphBullets": {"range": _range(operation, tab_id_resolver=tab_id_resolver), "bulletPreset": preset}}]
     if isinstance(operation, InsertTableOperation):
-        return [{"insertTable": {"rows": operation.rows, "columns": operation.columns, "location": _location(operation.index, segment_id=operation.segment_id, tab_id=operation.tab_id)}}]
+        return [{"insertTable": {"rows": operation.rows, "columns": operation.columns, "location": _location(operation.index, segment_id=operation.segment_id, tab_id=tab_id)}}]
     if isinstance(operation, InsertTableRowOperation):
-        return [{"insertTableRow": {"tableCellLocation": _table_cell_location(operation), "insertBelow": operation.insert_below}}]
+        return [{"insertTableRow": {"tableCellLocation": _table_cell_location(operation, tab_id_resolver=tab_id_resolver), "insertBelow": operation.insert_below}}]
     if isinstance(operation, InsertTableColumnOperation):
-        return [{"insertTableColumn": {"tableCellLocation": _table_cell_location(operation), "insertRight": operation.insert_right}}]
+        return [{"insertTableColumn": {"tableCellLocation": _table_cell_location(operation, tab_id_resolver=tab_id_resolver), "insertRight": operation.insert_right}}]
     if isinstance(operation, DeleteTableRowOperation):
-        return [{"deleteTableRow": {"tableCellLocation": _table_cell_location(operation)}}]
+        return [{"deleteTableRow": {"tableCellLocation": _table_cell_location(operation, tab_id_resolver=tab_id_resolver)}}]
     if isinstance(operation, UpdateTableCellOperation):
         return [
-            {"deleteContentRange": {"range": _range(operation)}},
-            {"insertText": {"location": _location(operation.start_index, segment_id=operation.segment_id, tab_id=operation.tab_id), "text": operation.text}},
+            {"deleteContentRange": {"range": _range(operation, tab_id_resolver=tab_id_resolver)}},
+            {"insertText": {"location": _location(operation.start_index, segment_id=operation.segment_id, tab_id=tab_id), "text": operation.text}},
         ]
     if isinstance(operation, TableCellStyleOperation):
         style = {}
@@ -663,14 +873,20 @@ def _operation_requests(operation: DocumentEditOperation) -> list[dict[str, Any]
             fields.append("contentAlignment")
         if not fields:
             raise WorkspaceAdapterError("document_operation_invalid", "At least one table cell style is required.", 422)
-        return [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": _table_cell_location(operation), "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": style, "fields": ",".join(fields)}}]
+        return [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": _table_cell_location(operation, tab_id_resolver=tab_id_resolver), "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": style, "fields": ",".join(fields)}}]
     if isinstance(operation, (CreateHeaderOperation, CreateFooterOperation)):
+        if tab_id and operation.section_index is None:
+            raise WorkspaceAdapterError(
+                "document_operation_invalid",
+                "A tab-scoped header or footer requires an inspected section index.",
+                422,
+            )
         payload: dict[str, Any] = {
             "type": operation.header_type if isinstance(operation, CreateHeaderOperation) else operation.footer_type
         }
         if operation.section_index is not None:
             payload["sectionBreakLocation"] = _location(
-                operation.section_index, tab_id=operation.tab_id
+                operation.section_index, tab_id=tab_id
             )
         kind = "createHeader" if isinstance(operation, CreateHeaderOperation) else "createFooter"
         return [{kind: payload}]

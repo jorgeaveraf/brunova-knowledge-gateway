@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.18:
+Arquitectura v0.19:
 
 Agents
 ↓
@@ -317,9 +317,9 @@ Tools disponibles:
 
 - `list_sources`: metadata no sensible del registry;
 - `get_operation_history`: historial seguro de `create_source_artifact`,
-  `update_source_artifact`, `move_source_artifact`, `delete_source_artifact` y
-  `share_source_artifact` y `convert_source_artifact`, filtrable por fuente u
-  operación y limitado a 50 resultados;
+  `update_source_artifact`, `move_source_artifact`, `delete_source_artifact`,
+  `share_source_artifact`, `convert_source_artifact`, producción documental y
+  mutaciones de tabs, filtrable por fuente u operación y limitado a 50 resultados;
 - `discover_source_candidates`: propone Shared Drives y carpetas raíz no
   registradas, sin ejecutar cambios;
 - `get_source_candidate_details`: devuelve detalle seguro de un candidato por
@@ -343,13 +343,22 @@ Tools disponibles:
 - `rename_source_artifact`: renombra un artefacto source-scoped;
 - `inspect_document_structure`: devuelve revisión, tabs, índices, párrafos,
   headings, listas, tablas/celdas, headers, footers, imágenes, page setup y
-  placeholders mediante un contrato acotado;
+  placeholders mediante un contrato acotado; cada tab se identifica con una
+  referencia opaca ligada al documento, nunca con su ID interno de Google;
+- `inspect_document_tab`: devuelve estructura, segmentos y placeholders de una
+  sola tab seleccionada mediante `tab_ref`;
+- `create_document_tab`: crea una tab con capability `update`, aprobación y
+  `required_revision_id`;
+- `rename_document_tab`: renombra una tab source-scoped sin exponer su ID;
+- `delete_document_tab`: elimina únicamente una tab hoja y nunca la última tab
+  del documento;
 - `edit_source_document`: ejecuta únicamente operaciones semánticas allowlisted
   de texto, estilos, listas, tablas y headers/footers con
-  `WriteControl.requiredRevisionId`;
+  `WriteControl.requiredRevisionId`; en documentos multi-tab exige `tab_ref` y
+  mantiene las operaciones dentro de esa tab;
 - `validate_document_structure`: quality gate read-only para headings,
   placeholders, tablas, header/footer, contenido mínimo, residuos Markdown y
-  revisión esperada;
+  revisión esperada, con requisitos por tab y paridad estructural entre pares;
 - `delete_source_artifact`: envía un artefacto autorizado a la papelera de
   Drive con capability `delete`;
 - `share_source_artifact`: concede acceso `reader` a una audiencia de correo
@@ -421,6 +430,34 @@ convertir DOCX crea un artefacto Google-native nuevo y conserva intacto el
 Office original. La fidelidad concreta de una conversión sigue dependiendo del
 importador nativo de Google Drive y debe confirmarse mediante inspección y
 quality gate.
+
+## Governed Google Docs Tab Operations
+
+La producción documental v0.19 utiliza referencias `tab_…` cifradas y
+autenticadas, ligadas al `source_id` y al artefacto. `inspect_document_structure`
+devuelve título, orden, parent opaco, nivel, párrafos y tablas de cada tab. Un
+handle manipulado, usado con otra fuente o aplicado a otro documento falla
+cerrado.
+
+`create_document_tab`, `rename_document_tab` y `delete_document_tab` requieren
+capability `update`, Approval Reference y `required_revision_id`; se auditan como
+mutaciones gobernadas. Delete rechaza la última tab y tabs con descendientes.
+`edit_source_document` acepta un scope `tab_ref` y convierte internamente las
+referencias opacas a los IDs que Google requiere. En un documento multi-tab no
+permite operaciones sin scope ni operaciones que intenten salir del scope.
+
+El quality gate acepta requisitos genéricos por título de tab y pares de paridad
+estructural. Puede verificar tabs requeridas, headings y secciones esperadas,
+Document Control mediante labels proporcionados por el consumidor, tablas,
+header/footer, contenido mínimo, placeholders y Markdown residual. La paridad
+compara niveles de headings, cantidad de listas y formas de tablas; no compara
+significado, calidad lingüística ni equivalencia de traducción.
+
+No existe traducción automática, decisión de idioma fuente, sincronización
+autónoma ni lógica específica de BKOS dentro del Gateway. Para copiar contenido
+o estructura entre tabs, el Management Agent combina inspección tab-scoped y
+ediciones semánticas gobernadas; el Gateway no ofrece un clon semántico que
+pueda inventar o alterar contenido.
 
 ## Historial operacional
 

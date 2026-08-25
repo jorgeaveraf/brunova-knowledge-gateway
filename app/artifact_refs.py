@@ -1,4 +1,4 @@
-"""Stateless encrypted references for source-scoped Workspace artifacts."""
+"""Stateless encrypted references for source-scoped Workspace artifacts and tabs."""
 
 from __future__ import annotations
 
@@ -63,5 +63,56 @@ class ArtifactReferenceCodec:
             raise WorkspaceAdapterError(
                 "artifact_reference_invalid",
                 "The artifact reference is invalid for the selected source.",
+                403,
+            ) from error
+
+    def encode_tab(self, *, source_id: str, artifact_id: str, tab_id: str) -> str:
+        """Return an opaque tab handle bound to one source and artifact."""
+
+        nonce = os.urandom(12)
+        payload = json.dumps(
+            {
+                "v": 1,
+                "source_id": source_id,
+                "artifact_id": artifact_id,
+                "tab_id": tab_id,
+            },
+            separators=(",", ":"),
+        ).encode()
+        encrypted = AESGCM(self._key).encrypt(
+            nonce, payload, b"brunova-document-tab-ref"
+        )
+        token = base64.urlsafe_b64encode(nonce + encrypted).decode().rstrip("=")
+        return f"tab_{token}"
+
+    def decode_tab(
+        self, tab_ref: str, *, source_id: str, artifact_id: str
+    ) -> str:
+        """Resolve an opaque tab handle only for its bound source and artifact."""
+
+        try:
+            prefix = "tab_"
+            if not tab_ref.startswith(prefix):
+                raise ValueError
+            encoded = tab_ref[len(prefix) :]
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = AESGCM(self._key).decrypt(
+                raw[:12], raw[12:], b"brunova-document-tab-ref"
+            )
+            claims = json.loads(payload)
+            if (
+                claims.get("v") != 1
+                or claims.get("source_id") != source_id
+                or claims.get("artifact_id") != artifact_id
+            ):
+                raise ValueError
+            tab_id = claims.get("tab_id")
+            if not isinstance(tab_id, str) or not tab_id:
+                raise ValueError
+            return tab_id
+        except Exception as error:
+            raise WorkspaceAdapterError(
+                "document_tab_reference_invalid",
+                "The document tab reference is invalid for the selected artifact.",
                 403,
             ) from error

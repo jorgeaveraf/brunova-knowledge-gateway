@@ -185,3 +185,14 @@ def test_cloud_logging_adapter_allowlists_fields_and_drops_sensitive_data():
     assert body["pageSize"] == 10
     assert 'jsonPayload.source_id="brunova_template"' in body["filter"]
     assert 'jsonPayload.action="update_source_artifact"' in body["filter"]
+
+
+def test_history_filter_includes_governed_document_tab_mutations():
+    query = CloudLoggingOperationHistoryStore._filter(None, None)
+
+    for operation in (
+        "create_document_tab",
+        "rename_document_tab",
+        "delete_document_tab",
+    ):
+        assert f'jsonPayload.action="{operation}"' in query

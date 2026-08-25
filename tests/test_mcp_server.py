@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import json
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -19,6 +20,9 @@ from app.document_production import (
     DocumentEditResult,
     DocumentStructure,
     ParagraphSummary,
+    SegmentSummary,
+    TableCellSummary,
+    TableSummary,
     TabStructure,
 )
 from app.policies.content_mutation import ContentMutationPolicy
@@ -264,6 +268,9 @@ class FakeDocsAdapter:
     def __init__(self):
         self.appended = []
         self.structured_edits = []
+        self.tab_mutations = []
+        self.revision = 1
+        self.tabs = [{"id": "tab-1", "title": "Tab 1", "index": 0}]
 
     def get_document(self, resource, *, max_chars):
         return GoogleDocContent(
@@ -279,13 +286,25 @@ class FakeDocsAdapter:
     def append_text(self, resource, *, text):
         self.appended.append((resource.id, text))
 
-    def inspect_structure(self, resource, *, artifact_ref, source_id):
+    def inspect_structure(self, resource, *, artifact_ref, source_id, reference_codec):
         return DocumentStructure(
             artifact_ref=artifact_ref,
             name=resource.name,
             source_id=source_id,
-            revision_id="revision-1",
-            tabs=[TabStructure(tab_id="tab-1", title="Tab 1", paragraphs=[], tables=[])],
+            revision_id=f"revision-{self.revision}",
+            tabs=[
+                TabStructure(
+                    tab_ref=reference_codec.encode_tab(
+                        source_id=source_id, artifact_id=resource.id, tab_id=item["id"]
+                    ),
+                    title=item["title"],
+                    index=item["index"],
+                    nesting_level=0,
+                    paragraphs=[],
+                    tables=[],
+                )
+                for item in self.tabs
+            ],
             headers=[],
             footers=[],
             image_count=0,
@@ -294,9 +313,47 @@ class FakeDocsAdapter:
             total_characters=0,
         )
 
-    def edit_structure(self, resource, *, required_revision_id, operations):
+    def edit_structure(
+        self, resource, *, required_revision_id, operations, tab_id_resolver
+    ):
         self.structured_edits.append((resource.id, required_revision_id, operations))
-        return "revision-2"
+        self.revision += 1
+        return f"revision-{self.revision}"
+
+    def create_tab(
+        self,
+        resource,
+        *,
+        title,
+        required_revision_id,
+        index=None,
+        parent_tab_id=None,
+    ):
+        self.revision += 1
+        position = len(self.tabs) if index is None else index
+        for item in self.tabs:
+            if item["index"] >= position:
+                item["index"] += 1
+        self.tabs.append(
+            {"id": f"tab-{len(self.tabs) + 1}", "title": title, "index": position}
+        )
+        self.tabs.sort(key=lambda item: item["index"])
+        self.tab_mutations.append(("create", title, parent_tab_id))
+        return f"revision-{self.revision}"
+
+    def rename_tab(self, resource, *, tab_id, title, required_revision_id):
+        next(item for item in self.tabs if item["id"] == tab_id)["title"] = title
+        self.revision += 1
+        self.tab_mutations.append(("rename", tab_id, title))
+        return f"revision-{self.revision}"
+
+    def delete_tab(self, resource, *, tab_id, required_revision_id):
+        self.tabs = [item for item in self.tabs if item["id"] != tab_id]
+        for index, item in enumerate(self.tabs):
+            item["index"] = index
+        self.revision += 1
+        self.tab_mutations.append(("delete", tab_id))
+        return f"revision-{self.revision}"
 
 
 class FakeSheetsAdapter:
@@ -381,7 +438,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_twenty_three_governed_tools(monkeypatch):
+def test_mcp_exposes_only_the_twenty_seven_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -414,7 +471,29 @@ def test_mcp_exposes_only_the_twenty_three_governed_tools(monkeypatch):
         "inspect_document_structure",
         "edit_source_document",
         "validate_document_structure",
+        "inspect_document_tab",
+        "create_document_tab",
+        "rename_document_tab",
+        "delete_document_tab",
     }
+    tab_tool_schemas = json.dumps(
+        [
+            tool.model_dump()
+            for tool in result.tools
+            if tool.name
+            in {
+                "inspect_document_structure",
+                "inspect_document_tab",
+                "create_document_tab",
+                "rename_document_tab",
+                "delete_document_tab",
+                "edit_source_document",
+            }
+        ]
+    )
+    assert '"tab_id"' not in tab_tool_schemas
+    assert '"tab_ids"' not in tab_tool_schemas
+    assert "tab_ref" in tab_tool_schemas
 
 
 def test_structured_document_production_flow_uses_opaque_refs_and_audits(monkeypatch):
@@ -481,7 +560,7 @@ def test_structured_document_production_flow_uses_opaque_refs_and_audits(monkeyp
                     "source_id": "career_ops",
                     "artifact_ref": copied_ref,
                     "requirements": {"minimum_characters": 0},
-                    "expected_revision_id": "revision-1",
+                    "expected_revision_id": "revision-2",
                 },
             )
             return resolved, copied, renamed, inspected, edited, validated
@@ -508,6 +587,283 @@ def test_structured_document_production_flow_uses_opaque_refs_and_audits(monkeyp
         "validate_document_structure",
     ]
     assert all("content" not in call.kwargs and "operations" not in call.kwargs for call in audit.call_args_list[-6:])
+
+
+def test_governed_tab_flow_uses_opaque_refs_preserves_non_target_and_audits(monkeypatch):
+    gateway_runtime = runtime()
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="document_12345"
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            initial = await client.call_tool(
+                "inspect_document_structure",
+                {"source_id": "career_ops", "artifact_ref": artifact_ref},
+            )
+            first_ref = initial.structured_content["tabs"][0]["tab_ref"]
+            renamed = await client.call_tool(
+                "rename_document_tab",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "tab_ref": first_ref,
+                    "title": "EN",
+                    "required_revision_id": "revision-1",
+                    "approval_reference": "tab-test-rename-en",
+                },
+            )
+            created = await client.call_tool(
+                "create_document_tab",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "title": "ES",
+                    "index": 1,
+                    "required_revision_id": "revision-2",
+                    "approval_reference": "tab-test-create-es",
+                },
+            )
+            es_ref = created.structured_content["tab"]["tab_ref"]
+            inspected_es = await client.call_tool(
+                "inspect_document_tab",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "tab_ref": es_ref,
+                },
+            )
+            edited = await client.call_tool(
+                "edit_source_document",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "tab_ref": es_ref,
+                    "required_revision_id": "revision-3",
+                    "operations": [
+                        {
+                            "operation": "insert_text_at_index",
+                            "index": 1,
+                            "text": "Contenido ES",
+                        }
+                    ],
+                    "approval_reference": "tab-test-edit-es",
+                },
+            )
+            final = await client.call_tool(
+                "inspect_document_structure",
+                {"source_id": "career_ops", "artifact_ref": artifact_ref},
+            )
+            return initial, renamed, created, inspected_es, edited, final
+
+    initial, renamed, created, inspected_es, edited, final = run(scenario())
+
+    assert all(
+        not result.is_error
+        for result in (initial, renamed, created, inspected_es, edited, final)
+    )
+    assert initial.structured_content["tabs"][0]["tab_ref"].startswith("tab_")
+    assert "tab_id" not in str(final.structured_content)
+    assert renamed.structured_content["tab"]["title"] == "EN"
+    assert created.structured_content["tab"]["title"] == "ES"
+    assert inspected_es.structured_content["tab"]["title"] == "ES"
+    assert edited.structured_content["revision_id"] == "revision-4"
+    assert [tab["title"] for tab in final.structured_content["tabs"]] == ["EN", "ES"]
+    scoped_operation = gateway_runtime.docs_adapter.structured_edits[-1][2][0]
+    assert scoped_operation.tab_ref == created.structured_content["tab"]["tab_ref"]
+    mutation_calls = [
+        call
+        for call in audit.call_args_list
+        if call.kwargs["action"]
+        in {"rename_document_tab", "create_document_tab", "edit_source_document"}
+    ]
+    assert [call.kwargs["action"] for call in mutation_calls] == [
+        "rename_document_tab",
+        "create_document_tab",
+        "edit_source_document",
+    ]
+    assert [call.kwargs["approval_reference"] for call in mutation_calls] == [
+        "tab-test-rename-en",
+        "tab-test-create-es",
+        "tab-test-edit-es",
+    ]
+
+
+def test_delete_document_tab_preserves_last_tab_and_deletes_only_leaf(monkeypatch):
+    gateway_runtime = runtime()
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="document_12345"
+    )
+    first_ref = gateway_runtime.artifact_reference_codec.encode_tab(
+        source_id="career_ops", artifact_id="document_12345", tab_id="tab-1"
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            only_tab = await client.call_tool(
+                "delete_document_tab",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "tab_ref": first_ref,
+                    "required_revision_id": "revision-1",
+                    "approval_reference": "tab-test-delete-only",
+                },
+            )
+            created = await client.call_tool(
+                "create_document_tab",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "title": "Temporary",
+                    "required_revision_id": "revision-1",
+                    "approval_reference": "tab-test-create-temporary",
+                },
+            )
+            deleted = await client.call_tool(
+                "delete_document_tab",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "tab_ref": created.structured_content["tab"]["tab_ref"],
+                    "required_revision_id": "revision-2",
+                    "approval_reference": "tab-test-delete-temporary",
+                },
+            )
+            return only_tab, created, deleted
+
+    only_tab, created, deleted = run(scenario())
+
+    assert only_tab.is_error is True
+    assert "document_tab_delete_invalid" in only_tab.content[0].text
+    assert created.is_error is False
+    assert deleted.is_error is False
+    assert deleted.structured_content["result"] == "deleted"
+    assert [item["title"] for item in gateway_runtime.docs_adapter.tabs] == ["Tab 1"]
+
+
+def test_bilingual_quality_gate_validates_each_tab_and_structural_parity(monkeypatch):
+    gateway_runtime = runtime()
+    codec = gateway_runtime.artifact_reference_codec
+    artifact_ref = codec.encode(source_id="career_ops", artifact_id="document_12345")
+    en_ref = codec.encode_tab(
+        source_id="career_ops", artifact_id="document_12345", tab_id="tab-en"
+    )
+    es_ref = codec.encode_tab(
+        source_id="career_ops", artifact_id="document_12345", tab_id="tab-es"
+    )
+
+    def tab(tab_ref, title, heading):
+        return TabStructure(
+            tab_ref=tab_ref,
+            title=title,
+            index=0 if title == "EN" else 1,
+            nesting_level=0,
+            paragraphs=[
+                ParagraphSummary(
+                    start_index=1,
+                    end_index=10,
+                    text=f"{heading}\n",
+                    named_style_type="HEADING_1",
+                ),
+                ParagraphSummary(
+                    start_index=10,
+                    end_index=20,
+                    text="Item\n",
+                    named_style_type="NORMAL_TEXT",
+                    bullet=True,
+                ),
+            ],
+            tables=[
+                TableSummary(
+                    start_index=20,
+                    end_index=30,
+                    rows=1,
+                    columns=2,
+                    tab_ref=tab_ref,
+                    cells=[
+                        TableCellSummary(
+                            row=0, column=0, start_index=21, end_index=24, text="Artifact"
+                        ),
+                        TableCellSummary(
+                            row=0, column=1, start_index=24, end_index=29, text="Status"
+                        ),
+                    ],
+                )
+            ],
+        )
+
+    gateway_runtime.docs_adapter.inspect_structure = Mock(
+        return_value=DocumentStructure(
+            artifact_ref=artifact_ref,
+            name="Bilingual Artifact",
+            source_id="career_ops",
+            revision_id="revision-bilingual",
+            tabs=[tab(en_ref, "EN", "Overview"), tab(es_ref, "ES", "Resumen")],
+            headers=[
+                SegmentSummary(segment_id="header-en", tab_ref=en_ref, paragraphs=[]),
+                SegmentSummary(segment_id="header-es", tab_ref=es_ref, paragraphs=[]),
+            ],
+            footers=[
+                SegmentSummary(segment_id="footer-en", tab_ref=en_ref, paragraphs=[]),
+                SegmentSummary(segment_id="footer-es", tab_ref=es_ref, paragraphs=[]),
+            ],
+            image_count=0,
+            document_style={},
+            placeholders=[],
+            total_characters=32,
+        )
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "validate_document_structure",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "requirements": {
+                        "minimum_characters": 0,
+                        "tab_requirements": [
+                            {
+                                "title": "EN",
+                                "expected_headings": ["Overview"],
+                                "minimum_table_count": 1,
+                                "require_document_control": True,
+                                "document_control_labels": ["Artifact", "Status"],
+                                "require_header": True,
+                                "require_footer": True,
+                            },
+                            {
+                                "title": "ES",
+                                "expected_headings": ["Resumen"],
+                                "minimum_table_count": 1,
+                                "require_document_control": True,
+                                "document_control_labels": ["Artifact", "Status"],
+                                "require_header": True,
+                                "require_footer": True,
+                            },
+                        ],
+                        "structural_parity_pairs": [
+                            {"left_title": "EN", "right_title": "ES"}
+                        ],
+                    },
+                    "expected_revision_id": "revision-bilingual",
+                },
+            )
+
+    result = run(scenario())
+
+    assert result.is_error is False
+    assert result.structured_content["passed"] is True
+    assert result.structured_content["checks"]["tab:EN:exists"] is True
+    assert result.structured_content["checks"]["tab:ES:document_control"] is True
+    assert result.structured_content["checks"]["parity:EN:ES"] is True
 
 
 def test_artifact_resolution_rejects_missing_ambiguous_and_out_of_scope(monkeypatch):
@@ -596,8 +952,14 @@ def test_document_quality_gate_reports_specific_failures_without_mutation(monkey
             revision_id="revision-3",
             tabs=[
                 TabStructure(
-                    tab_id="tab-1",
+                    tab_ref=gateway_runtime.artifact_reference_codec.encode_tab(
+                        source_id="career_ops",
+                        artifact_id="document_12345",
+                        tab_id="tab-1",
+                    ),
                     title="Main",
+                    index=0,
+                    nesting_level=0,
                     paragraphs=[
                         ParagraphSummary(
                             start_index=1,

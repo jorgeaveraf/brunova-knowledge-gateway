@@ -11,6 +11,7 @@ from app.adapters.google_workspace.docs import (
 from app.adapters.google_workspace.models import WorkspaceResource
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.config.settings import Settings
+from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
     CreateFooterOperation,
     CreateHeaderOperation,
@@ -237,11 +238,16 @@ def test_inspect_structure_returns_revision_tabs_tables_segments_and_safe_styles
     )
 
     result = adapter.inspect_structure(
-        resource, artifact_ref="artifact_opaque", source_id="career_ops"
+        resource,
+        artifact_ref="artifact_opaque",
+        source_id="career_ops",
+        reference_codec=ArtifactReferenceCodec.for_testing(),
     )
 
     assert result.revision_id == "revision-7"
     assert result.tabs[0].paragraphs[0].named_style_type == "HEADING_1"
+    assert result.tabs[0].tab_ref.startswith("tab_")
+    assert "tab-1" not in result.model_dump_json()
     assert result.tabs[0].tables[0].cells[0].text == "A\n"
     assert result.headers[0].segment_id == "header-1"
     assert result.placeholders == ["{{x}}"]
@@ -286,7 +292,10 @@ def test_structured_edit_maps_semantic_operations_and_requires_revision():
     ]
 
     revision = adapter.edit_structure(
-        resource, required_revision_id="revision-7", operations=operations
+        resource,
+        required_revision_id="revision-7",
+        operations=operations,
+        tab_id_resolver=lambda value: value,
     )
 
     assert revision == "revision-8"
@@ -413,7 +422,153 @@ def test_structured_edit_fails_safely_on_stale_revision():
             operations=[
                 ReplaceAllTextOperation(operation="replace_all_text", find="old", replace="new")
             ],
+            tab_id_resolver=lambda value: value,
         )
 
     assert captured.value.code == "document_revision_conflict"
     assert captured.value.status_code == 409
+
+
+def test_tab_mutations_map_to_allowlisted_google_requests_with_revision_control():
+    update_request = Mock()
+    update_request.execute.side_effect = [
+        {"writeControl": {"requiredRevisionId": "revision-2"}},
+        {"writeControl": {"requiredRevisionId": "revision-3"}},
+        {"writeControl": {"requiredRevisionId": "revision-4"}},
+    ]
+    documents = Mock()
+    documents.batchUpdate.return_value = update_request
+    docs = Mock()
+    docs.documents.return_value = documents
+    adapter = GoogleDocsAdapter(
+        settings(),
+        credentials_factory=Mock(return_value=object()),
+        service_builder=Mock(return_value=docs),
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Controlled Doc",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+    )
+
+    assert (
+        adapter.create_tab(
+            resource,
+            title="ES",
+            index=1,
+            parent_tab_id=None,
+            required_revision_id="revision-1",
+        )
+        == "revision-2"
+    )
+    assert (
+        adapter.rename_tab(
+            resource,
+            tab_id="google-tab-1",
+            title="EN",
+            required_revision_id="revision-2",
+        )
+        == "revision-3"
+    )
+    assert (
+        adapter.delete_tab(
+            resource,
+            tab_id="google-tab-2",
+            required_revision_id="revision-3",
+        )
+        == "revision-4"
+    )
+
+    bodies = [call.kwargs["body"] for call in documents.batchUpdate.call_args_list]
+    assert bodies == [
+        {
+            "requests": [
+                {
+                    "addDocumentTab": {
+                        "tabProperties": {"title": "ES", "index": 1}
+                    }
+                }
+            ],
+            "writeControl": {"requiredRevisionId": "revision-1"},
+        },
+        {
+            "requests": [
+                {
+                    "updateDocumentTabProperties": {
+                        "tabProperties": {"tabId": "google-tab-1", "title": "EN"},
+                        "fields": "title",
+                    }
+                }
+            ],
+            "writeControl": {"requiredRevisionId": "revision-2"},
+        },
+        {
+            "requests": [{"deleteTab": {"tabId": "google-tab-2"}}],
+            "writeControl": {"requiredRevisionId": "revision-3"},
+        },
+    ]
+
+
+def test_tab_scoped_semantic_request_resolves_opaque_reference_internally():
+    operation = InsertTextOperation(
+        operation="insert_text_at_index",
+        index=1,
+        text="Spanish content",
+        tab_ref="tab_opaque",
+    )
+
+    requests = _operation_requests(
+        operation,
+        tab_id_resolver=lambda value: {
+            "tab_opaque": "google-internal-tab-id"
+        }[value],
+    )
+
+    assert requests == [
+        {
+            "insertText": {
+                "location": {"index": 1, "tabId": "google-internal-tab-id"},
+                "text": "Spanish content",
+            }
+        }
+    ]
+    assert "tab_opaque" not in str(requests)
+
+
+def test_tab_mutation_reports_revision_conflict_without_retrying():
+    response = Mock(status=409, reason="Conflict")
+    update_request = Mock()
+    update_request.execute.side_effect = HttpError(
+        response,
+        b'{"error":{"message":"requiredRevisionId does not match current revision"}}',
+    )
+    documents = Mock()
+    documents.batchUpdate.return_value = update_request
+    docs = Mock()
+    docs.documents.return_value = documents
+    adapter = GoogleDocsAdapter(
+        settings(),
+        credentials_factory=Mock(return_value=object()),
+        service_builder=Mock(return_value=docs),
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Controlled Doc",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+    )
+
+    with pytest.raises(WorkspaceAdapterError) as captured:
+        adapter.create_tab(
+            resource,
+            title="ES",
+            required_revision_id="stale-revision",
+        )
+
+    assert captured.value.code == "document_revision_conflict"
+    assert documents.batchUpdate.call_count == 1

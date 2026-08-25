@@ -30,6 +30,8 @@ from app.document_production import (
     DocumentQualityRequirements,
     DocumentQualityResult,
     DocumentStructure,
+    DocumentTabInspectionResult,
+    DocumentTabMutationResult,
 )
 from app.policies.content_mutation import ContentMutationPolicy
 from app.operation_history import (
@@ -41,17 +43,21 @@ from app.operation_history import (
 from app.knowledge import (
     discover_candidate_sources,
     copy_authorized_source_artifact,
+    create_authorized_document_tab,
     create_authorized_source_artifact,
     convert_authorized_source_artifact,
     delete_authorized_source_artifact,
+    delete_authorized_document_tab,
     get_candidate_details,
     inspect_authorized_source_artifacts,
     inspect_authorized_document_structure,
+    inspect_authorized_document_tab,
     list_authorized_source_files,
     list_registered_sources,
     list_registered_source_proposals,
     move_authorized_source_artifact,
     rename_authorized_source_artifact,
+    rename_authorized_document_tab,
     resolve_authorized_source_artifact,
     registered_source,
     registered_source_proposal,
@@ -141,6 +147,14 @@ class DocumentQualityToolResult(DocumentQualityResult):
     request_id: str
 
 
+class DocumentTabInspectionToolResult(DocumentTabInspectionResult):
+    request_id: str
+
+
+class DocumentTabMutationToolResult(DocumentTabMutationResult):
+    request_id: str
+
+
 class OperationHistoryToolResult(BaseModel):
     operations: list[OperationHistoryEntry]
     request_id: str
@@ -148,7 +162,7 @@ class OperationHistoryToolResult(BaseModel):
 
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.18.0",
+    version="0.19.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
         "execute full capability-gated Google Workspace CRUD operations with an "
@@ -594,12 +608,164 @@ def inspect_document_structure(
 
 
 @mcp_server.tool()
+def inspect_document_tab(
+    source_id: str,
+    artifact_ref: str,
+    tab_ref: str,
+    ctx: Context,
+) -> DocumentTabInspectionToolResult:
+    """Inspect one document tab selected by an opaque artifact-bound reference."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="inspect_document_tab",
+        operation=lambda runtime, request_id: DocumentTabInspectionToolResult(
+            **inspect_authorized_document_tab(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                tab_ref=tab_ref,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document_tab",
+    )
+
+
+@mcp_server.tool()
+def create_document_tab(
+    source_id: str,
+    artifact_ref: str,
+    title: str,
+    required_revision_id: str,
+    ctx: Context,
+    index: int | None = None,
+    parent_tab_ref: str | None = None,
+    approval_reference: str = "",
+) -> DocumentTabMutationToolResult:
+    """Create one governed document tab at an inspected revision."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="create_document_tab",
+        operation=lambda runtime, request_id: DocumentTabMutationToolResult(
+            **create_authorized_document_tab(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                title=title,
+                required_revision_id=required_revision_id,
+                approval_reference=approval_reference,
+                index=index,
+                parent_tab_ref=parent_tab_ref,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document_tab",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+    )
+
+
+@mcp_server.tool()
+def rename_document_tab(
+    source_id: str,
+    artifact_ref: str,
+    tab_ref: str,
+    title: str,
+    required_revision_id: str,
+    ctx: Context,
+    approval_reference: str = "",
+) -> DocumentTabMutationToolResult:
+    """Rename one governed document tab selected by an opaque reference."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="rename_document_tab",
+        operation=lambda runtime, request_id: DocumentTabMutationToolResult(
+            **rename_authorized_document_tab(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                tab_ref=tab_ref,
+                title=title,
+                required_revision_id=required_revision_id,
+                approval_reference=approval_reference,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document_tab",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+    )
+
+
+@mcp_server.tool()
+def delete_document_tab(
+    source_id: str,
+    artifact_ref: str,
+    tab_ref: str,
+    required_revision_id: str,
+    ctx: Context,
+    approval_reference: str = "",
+) -> DocumentTabMutationToolResult:
+    """Delete one leaf document tab while preserving at least one tab."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="delete_document_tab",
+        operation=lambda runtime, request_id: DocumentTabMutationToolResult(
+            **delete_authorized_document_tab(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                tab_ref=tab_ref,
+                required_revision_id=required_revision_id,
+                approval_reference=approval_reference,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document_tab",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+    )
+
+
+@mcp_server.tool()
 def edit_source_document(
     source_id: str,
     artifact_ref: str,
     required_revision_id: str,
     operations: list[DocumentEditOperation],
     ctx: Context,
+    tab_ref: str | None = None,
     approval_reference: str = "",
 ) -> DocumentEditToolResult:
     """Apply only allowlisted semantic Docs operations at an inspected revision."""
@@ -618,6 +784,7 @@ def edit_source_document(
                 artifact_ref=artifact_ref,
                 required_revision_id=required_revision_id,
                 operations=operations,
+                tab_ref=tab_ref,
                 approval_reference=approval_reference,
             ).model_dump(),
             request_id=request_id,

@@ -48,7 +48,7 @@ class ParagraphSummary(BaseModel):
     alignment: str | None = None
     bullet: bool = False
     segment_id: str = ""
-    tab_id: str | None = None
+    tab_ref: str | None = None
     text_style: TextStyleSummary | None = None
 
 
@@ -67,26 +67,50 @@ class TableSummary(BaseModel):
     columns: int
     cells: list[TableCellSummary]
     segment_id: str = ""
-    tab_id: str | None = None
+    tab_ref: str | None = None
 
 
 class SegmentSummary(BaseModel):
     segment_id: str
+    tab_ref: str | None = None
     paragraphs: list[ParagraphSummary]
 
 
 class SectionSummary(BaseModel):
     start_index: int
     end_index: int
-    tab_id: str | None = None
+    tab_ref: str | None = None
     section_style: dict[str, object]
 
 
 class TabStructure(BaseModel):
-    tab_id: str
+    tab_ref: str
     title: str
+    index: int
+    parent_tab_ref: str | None = None
+    nesting_level: int
     paragraphs: list[ParagraphSummary]
     tables: list[TableSummary]
+
+
+class DocumentTabMutationResult(BaseModel):
+    artifact_ref: str
+    source_id: str
+    revision_id: str
+    tab: TabStructure | None = None
+    result: Literal["created", "renamed", "deleted"]
+
+
+class DocumentTabInspectionResult(BaseModel):
+    artifact_ref: str
+    source_id: str
+    revision_id: str
+    tab: TabStructure
+    headers: list[SegmentSummary]
+    footers: list[SegmentSummary]
+    sections: list[SectionSummary]
+    placeholders: list[str]
+    total_characters: int
 
 
 class DocumentStructure(BaseModel):
@@ -108,7 +132,7 @@ class RangeOperation(BaseModel):
     start_index: int = Field(ge=0)
     end_index: int = Field(gt=0)
     segment_id: str = ""
-    tab_id: str | None = None
+    tab_ref: str | None = None
 
 
 class InsertTextOperation(BaseModel):
@@ -116,7 +140,7 @@ class InsertTextOperation(BaseModel):
     index: int = Field(ge=0)
     text: str = Field(min_length=1, max_length=10000)
     segment_id: str = ""
-    tab_id: str | None = None
+    tab_ref: str | None = None
 
 
 class DeleteContentOperation(RangeOperation):
@@ -128,7 +152,7 @@ class ReplaceAllTextOperation(BaseModel):
     find: str = Field(min_length=1, max_length=500)
     replace: str = Field(max_length=10000)
     match_case: bool = True
-    tab_ids: list[str] | None = None
+    tab_refs: list[str] | None = None
 
 
 class ParagraphStyleOperation(RangeOperation):
@@ -162,14 +186,14 @@ class InsertTableOperation(BaseModel):
     rows: int = Field(ge=1, le=50)
     columns: int = Field(ge=1, le=20)
     segment_id: str = ""
-    tab_id: str | None = None
+    tab_ref: str | None = None
 
 
 class TableLocationOperation(BaseModel):
     table_start_index: int = Field(ge=1)
     row_index: int = Field(ge=0)
     column_index: int = Field(ge=0)
-    tab_id: str | None = None
+    tab_ref: str | None = None
 
 
 class InsertTableRowOperation(TableLocationOperation):
@@ -201,14 +225,14 @@ class CreateHeaderOperation(BaseModel):
     operation: Literal["create_header"]
     header_type: Literal["DEFAULT"] = "DEFAULT"
     section_index: int | None = Field(default=None, ge=1)
-    tab_id: str | None = None
+    tab_ref: str | None = None
 
 
 class CreateFooterOperation(BaseModel):
     operation: Literal["create_footer"]
     footer_type: Literal["DEFAULT"] = "DEFAULT"
     section_index: int | None = Field(default=None, ge=1)
-    tab_id: str | None = None
+    tab_ref: str | None = None
 
 
 DocumentEditOperation = Annotated[
@@ -249,6 +273,31 @@ class DocumentQualityRequirements(BaseModel):
     minimum_characters: int = Field(default=1, ge=0)
     reject_placeholders: bool = True
     reject_markdown: bool = True
+    tab_requirements: list["DocumentTabQualityRequirements"] = Field(
+        default_factory=list, max_length=20
+    )
+    structural_parity_pairs: list["DocumentTabParityRequirement"] = Field(
+        default_factory=list, max_length=10
+    )
+
+
+class DocumentTabQualityRequirements(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    expected_headings: list[str] = Field(default_factory=list, max_length=50)
+    expected_sections: list[str] = Field(default_factory=list, max_length=50)
+    minimum_table_count: int = Field(default=0, ge=0, le=100)
+    require_document_control: bool = False
+    document_control_labels: list[str] = Field(default_factory=list, max_length=20)
+    require_header: bool = False
+    require_footer: bool = False
+    minimum_characters: int = Field(default=1, ge=0)
+    reject_placeholders: bool = True
+    reject_markdown: bool = True
+
+
+class DocumentTabParityRequirement(BaseModel):
+    left_title: str = Field(min_length=1, max_length=100)
+    right_title: str = Field(min_length=1, max_length=100)
 
 
 class DocumentQualityResult(BaseModel):

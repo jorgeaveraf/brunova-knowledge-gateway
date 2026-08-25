@@ -24,7 +24,10 @@ from app.document_production import (
     DocumentQualityRequirements,
     DocumentQualityResult,
     DocumentStructure,
+    DocumentTabInspectionResult,
+    DocumentTabMutationResult,
     MARKDOWN_PATTERNS,
+    PLACEHOLDER_PATTERN,
 )
 from app.policies.content_mutation import ContentMutationPolicy, MutationOperation
 from app.policies.source_access import SourceAccessPolicy
@@ -352,8 +355,469 @@ def inspect_authorized_document_structure(
         reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
     )
     return docs_adapter.inspect_structure(
-        resource, artifact_ref=artifact_ref, source_id=source_id
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
     )
+
+
+def inspect_authorized_document_tab(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    tab_ref: str,
+) -> DocumentTabInspectionResult:
+    structure = inspect_authorized_document_structure(
+        registry=registry,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        docs_adapter=docs_adapter,
+        reference_codec=reference_codec,
+        source_id=source_id,
+        artifact_ref=artifact_ref,
+    )
+    artifact_id = reference_codec.decode(artifact_ref, source_id=source_id)
+    target_id = reference_codec.decode_tab(
+        tab_ref, source_id=source_id, artifact_id=artifact_id
+    )
+    tab = _tab_by_internal_id(
+        structure, reference_codec, source_id, artifact_id, target_id
+    )
+    headers = _segments_for_tab(
+        structure.headers, reference_codec, source_id, artifact_id, target_id
+    )
+    footers = _segments_for_tab(
+        structure.footers, reference_codec, source_id, artifact_id, target_id
+    )
+    sections = [
+        item
+        for item in structure.sections
+        if item.tab_ref
+        and reference_codec.decode_tab(
+            item.tab_ref, source_id=source_id, artifact_id=artifact_id
+        )
+        == target_id
+    ]
+    text = "".join(item.text for item in tab.paragraphs)
+    return DocumentTabInspectionResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        revision_id=structure.revision_id,
+        tab=tab,
+        headers=headers,
+        footers=footers,
+        sections=sections,
+        placeholders=sorted(set(PLACEHOLDER_PATTERN.findall(text)))[:100],
+        total_characters=len(text),
+    )
+
+
+def create_authorized_document_tab(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    title: str,
+    required_revision_id: str,
+    approval_reference: str,
+    index: int | None = None,
+    parent_tab_ref: str | None = None,
+) -> DocumentTabMutationResult:
+    allowed_source, resource, revision = _authorized_document_tab_mutation(
+        mutation_policy=mutation_policy,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        reference_codec=reference_codec,
+        source_id=source_id,
+        artifact_ref=artifact_ref,
+        required_revision_id=required_revision_id,
+        approval_reference=approval_reference,
+    )
+    safe_title = _validated_tab_title(title)
+    if index is not None and index < 0:
+        raise WorkspaceAdapterError(
+            "document_tab_index_invalid",
+            "A document tab index must be zero or greater.",
+            422,
+        )
+    current = docs_adapter.inspect_structure(
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    _ensure_unique_tab_title(current, safe_title)
+    parent_id = (
+        reference_codec.decode_tab(
+            parent_tab_ref, source_id=source_id, artifact_id=resource.id
+        )
+        if parent_tab_ref
+        else None
+    )
+    if parent_id:
+        _tab_by_internal_id(
+            current, reference_codec, source_id, resource.id, parent_id
+        )
+    docs_adapter.create_tab(
+        resource,
+        title=safe_title,
+        required_revision_id=revision,
+        index=index,
+        parent_tab_id=parent_id,
+    )
+    updated = docs_adapter.inspect_structure(
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    created = next(tab for tab in updated.tabs if tab.title == safe_title)
+    return DocumentTabMutationResult(
+        artifact_ref=artifact_ref,
+        source_id=allowed_source.definition.id,
+        revision_id=updated.revision_id,
+        tab=created,
+        result="created",
+    )
+
+
+def rename_authorized_document_tab(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    tab_ref: str,
+    title: str,
+    required_revision_id: str,
+    approval_reference: str,
+) -> DocumentTabMutationResult:
+    allowed_source, resource, revision = _authorized_document_tab_mutation(
+        mutation_policy=mutation_policy,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        reference_codec=reference_codec,
+        source_id=source_id,
+        artifact_ref=artifact_ref,
+        required_revision_id=required_revision_id,
+        approval_reference=approval_reference,
+    )
+    safe_title = _validated_tab_title(title)
+    target_id = reference_codec.decode_tab(
+        tab_ref, source_id=source_id, artifact_id=resource.id
+    )
+    current = docs_adapter.inspect_structure(
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    _tab_by_internal_id(current, reference_codec, source_id, resource.id, target_id)
+    _ensure_unique_tab_title(
+        current,
+        safe_title,
+        excluded_tab_id=target_id,
+        codec=reference_codec,
+        source_id=source_id,
+        artifact_id=resource.id,
+    )
+    docs_adapter.rename_tab(
+        resource,
+        tab_id=target_id,
+        title=safe_title,
+        required_revision_id=revision,
+    )
+    updated = docs_adapter.inspect_structure(
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    renamed = _tab_by_internal_id(
+        updated, reference_codec, source_id, resource.id, target_id
+    )
+    return DocumentTabMutationResult(
+        artifact_ref=artifact_ref,
+        source_id=allowed_source.definition.id,
+        revision_id=updated.revision_id,
+        tab=renamed,
+        result="renamed",
+    )
+
+
+def delete_authorized_document_tab(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    tab_ref: str,
+    required_revision_id: str,
+    approval_reference: str,
+) -> DocumentTabMutationResult:
+    allowed_source, resource, revision = _authorized_document_tab_mutation(
+        mutation_policy=mutation_policy,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        reference_codec=reference_codec,
+        source_id=source_id,
+        artifact_ref=artifact_ref,
+        required_revision_id=required_revision_id,
+        approval_reference=approval_reference,
+    )
+    target_id = reference_codec.decode_tab(
+        tab_ref, source_id=source_id, artifact_id=resource.id
+    )
+    current = docs_adapter.inspect_structure(
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    _tab_by_internal_id(current, reference_codec, source_id, resource.id, target_id)
+    if len(current.tabs) <= 1:
+        raise WorkspaceAdapterError(
+            "document_tab_delete_invalid",
+            "The only document tab cannot be deleted.",
+            422,
+        )
+    for item in current.tabs:
+        if item.parent_tab_ref and reference_codec.decode_tab(
+            item.parent_tab_ref, source_id=source_id, artifact_id=resource.id
+        ) == target_id:
+            raise WorkspaceAdapterError(
+                "document_tab_delete_has_children",
+                "A tab with child tabs cannot be deleted by this governed operation.",
+                422,
+            )
+    docs_adapter.delete_tab(
+        resource, tab_id=target_id, required_revision_id=revision
+    )
+    updated = docs_adapter.inspect_structure(
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    return DocumentTabMutationResult(
+        artifact_ref=artifact_ref,
+        source_id=allowed_source.definition.id,
+        revision_id=updated.revision_id,
+        tab=None,
+        result="deleted",
+    )
+
+
+def _authorized_document_tab_mutation(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    required_revision_id: str,
+    approval_reference: str,
+):
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.UPDATE,
+        approval_reference=approval_reference,
+    )
+    revision = required_revision_id.strip()
+    if not revision:
+        raise WorkspaceAdapterError(
+            "document_revision_required", "A required document revision is mandatory.", 422
+        )
+    resource = _resource_from_reference(
+        reference_codec,
+        workspace_adapter,
+        source_policy,
+        allowed_source,
+        source_id,
+        artifact_ref,
+    )
+    if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+        raise WorkspaceAdapterError(
+            "resource_type_invalid",
+            "The requested resource is not a native Google Doc.",
+            422,
+        )
+    return allowed_source, resource, revision
+
+
+def _validated_tab_title(title: str) -> str:
+    value = title.strip()
+    if not value or len(value) > 100 or any(ord(character) < 32 for character in value):
+        raise WorkspaceAdapterError(
+            "document_tab_title_invalid",
+            "A document tab title must contain between 1 and 100 visible characters.",
+            422,
+        )
+    return value
+
+
+def _tab_by_internal_id(
+    structure: DocumentStructure,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+    tab_id: str,
+):
+    for tab in structure.tabs:
+        if (
+            reference_codec.decode_tab(
+                tab.tab_ref, source_id=source_id, artifact_id=artifact_id
+            )
+            == tab_id
+        ):
+            return tab
+    raise WorkspaceAdapterError(
+        "document_tab_not_found",
+        "The selected tab no longer exists in the document.",
+        404,
+    )
+
+
+def _segments_for_tab(
+    segments,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+    tab_id: str,
+):
+    return [
+        item
+        for item in segments
+        if item.tab_ref
+        and reference_codec.decode_tab(
+            item.tab_ref, source_id=source_id, artifact_id=artifact_id
+        )
+        == tab_id
+    ]
+
+
+def _ensure_unique_tab_title(
+    structure: DocumentStructure,
+    title: str,
+    *,
+    excluded_tab_id: str | None = None,
+    codec: ArtifactReferenceCodec | None = None,
+    source_id: str | None = None,
+    artifact_id: str | None = None,
+) -> None:
+    for tab in structure.tabs:
+        if excluded_tab_id is not None:
+            if codec is None or source_id is None or artifact_id is None:
+                raise RuntimeError("Tab identity context is required for an exclusion.")
+            current_id = codec.decode_tab(
+                tab.tab_ref, source_id=source_id, artifact_id=artifact_id
+            )
+            if current_id == excluded_tab_id:
+                continue
+        if tab.title.casefold() == title.casefold():
+            raise WorkspaceAdapterError(
+                "document_tab_title_duplicate",
+                "A document tab with that title already exists.",
+                409,
+            )
+
+
+def _scope_document_operations(
+    operations: list[DocumentEditOperation],
+    *,
+    tab_ref: str | None,
+    structure: DocumentStructure,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+) -> list[DocumentEditOperation]:
+    explicit_scope = tab_ref is not None
+    default_ref = tab_ref
+    if default_ref is None and len(structure.tabs) == 1:
+        default_ref = structure.tabs[0].tab_ref
+    default_id = (
+        reference_codec.decode_tab(
+            default_ref, source_id=source_id, artifact_id=artifact_id
+        )
+        if default_ref
+        else None
+    )
+    if default_id:
+        _tab_by_internal_id(
+            structure, reference_codec, source_id, artifact_id, default_id
+        )
+
+    scoped: list[DocumentEditOperation] = []
+    for operation in operations:
+        if hasattr(operation, "tab_refs"):
+            references = list(operation.tab_refs or [])
+            if not references:
+                if default_ref is None:
+                    raise WorkspaceAdapterError(
+                        "document_tab_reference_required",
+                        "Each operation on a multi-tab document requires an opaque tab reference.",
+                        422,
+                    )
+                references = [default_ref]
+            resolved = {
+                reference_codec.decode_tab(
+                    item, source_id=source_id, artifact_id=artifact_id
+                )
+                for item in references
+            }
+            if default_id is not None and resolved != {default_id}:
+                raise WorkspaceAdapterError(
+                    "document_tab_scope_mismatch",
+                    "An operation cannot target a tab outside the requested tab scope.",
+                    403,
+                )
+            scoped.append(operation.model_copy(update={"tab_refs": references}))
+            continue
+
+        operation_ref = getattr(operation, "tab_ref", None)
+        if operation_ref is None:
+            if (
+                not explicit_scope
+                and len(structure.tabs) == 1
+                and operation.operation in {"create_header", "create_footer"}
+            ):
+                scoped.append(operation)
+                continue
+            if default_ref is None:
+                raise WorkspaceAdapterError(
+                    "document_tab_reference_required",
+                    "Each operation on a multi-tab document requires an opaque tab reference.",
+                    422,
+                )
+            operation_ref = default_ref
+        operation_id = reference_codec.decode_tab(
+            operation_ref, source_id=source_id, artifact_id=artifact_id
+        )
+        if default_id is not None and operation_id != default_id:
+            raise WorkspaceAdapterError(
+                "document_tab_scope_mismatch",
+                "An operation cannot target a tab outside the requested tab scope.",
+                403,
+            )
+        scoped.append(operation.model_copy(update={"tab_ref": operation_ref}))
+    return scoped
 
 
 def edit_authorized_source_document(
@@ -368,6 +832,7 @@ def edit_authorized_source_document(
     required_revision_id: str,
     operations: list[DocumentEditOperation],
     approval_reference: str,
+    tab_ref: str | None = None,
 ) -> DocumentEditResult:
     allowed_source = mutation_policy.authorize(
         source_id=source_id,
@@ -385,16 +850,33 @@ def edit_authorized_source_document(
     resource = _resource_from_reference(
         reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
     )
+    structure = docs_adapter.inspect_structure(
+        resource,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    scoped_operations = _scope_document_operations(
+        operations,
+        tab_ref=tab_ref,
+        structure=structure,
+        reference_codec=reference_codec,
+        source_id=source_id,
+        artifact_id=resource.id,
+    )
     revision = docs_adapter.edit_structure(
         resource,
         required_revision_id=required_revision_id.strip(),
-        operations=operations,
+        operations=scoped_operations,
+        tab_id_resolver=lambda tab_ref: reference_codec.decode_tab(
+            tab_ref, source_id=source_id, artifact_id=resource.id
+        ),
     )
     return DocumentEditResult(
         artifact_ref=artifact_ref,
         source_id=source_id,
         revision_id=revision,
-        applied_operations=len(operations),
+        applied_operations=len(scoped_operations),
     )
 
 
@@ -419,11 +901,18 @@ def validate_authorized_document_structure(
         source_id=source_id,
         artifact_ref=artifact_ref,
     )
+    artifact_id = reference_codec.decode(artifact_ref, source_id=source_id)
     paragraphs = [paragraph for tab in structure.tabs for paragraph in tab.paragraphs]
-    headings = {paragraph.text.strip() for paragraph in paragraphs if (paragraph.named_style_type or "").startswith("HEADING_")}
+    headings = {
+        paragraph.text.strip()
+        for paragraph in paragraphs
+        if (paragraph.named_style_type or "").startswith("HEADING_")
+    }
     full_text = "".join(paragraph.text for paragraph in paragraphs)
     table_count = sum(len(tab.tables) for tab in structure.tabs)
     checks = {
+        "unique_tab_titles": len({tab.title.casefold() for tab in structure.tabs})
+        == len(structure.tabs),
         "expected_headings": all(item in headings for item in requirements.expected_headings),
         "expected_sections": all(item in headings for item in requirements.expected_sections),
         "minimum_tables": table_count >= requirements.minimum_table_count,
@@ -435,6 +924,7 @@ def validate_authorized_document_structure(
         "revision": expected_revision_id is None or structure.revision_id == expected_revision_id,
     }
     issue_labels = {
+        "unique_tab_titles": "Document tab titles must be unique.",
         "expected_headings": "One or more required headings are missing.",
         "expected_sections": "One or more required sections are missing.",
         "minimum_tables": "The document has fewer tables than required.",
@@ -445,6 +935,77 @@ def validate_authorized_document_structure(
         "no_markdown": "Markdown-like formatting remains in the document.",
         "revision": "The document revision does not match the expected revision.",
     }
+    tabs_by_title = {tab.title: tab for tab in structure.tabs}
+    for requirement in requirements.tab_requirements:
+        key_prefix = f"tab:{requirement.title}"
+        tab = tabs_by_title.get(requirement.title)
+        checks[f"{key_prefix}:exists"] = tab is not None
+        issue_labels[f"{key_prefix}:exists"] = (
+            f"Required document tab '{requirement.title}' is missing."
+        )
+        if tab is None:
+            continue
+        tab_headings = {
+            paragraph.text.strip()
+            for paragraph in tab.paragraphs
+            if (paragraph.named_style_type or "").startswith("HEADING_")
+        }
+        tab_text = "".join(paragraph.text for paragraph in tab.paragraphs)
+        tab_id = reference_codec.decode_tab(
+            tab.tab_ref, source_id=source_id, artifact_id=artifact_id
+        )
+        tab_headers = _segments_for_tab(
+            structure.headers, reference_codec, source_id, artifact_id, tab_id
+        )
+        tab_footers = _segments_for_tab(
+            structure.footers, reference_codec, source_id, artifact_id, tab_id
+        )
+        tab_checks = {
+            "expected_headings": all(
+                item in tab_headings for item in requirement.expected_headings
+            ),
+            "expected_sections": all(
+                item in tab_headings for item in requirement.expected_sections
+            ),
+            "minimum_tables": len(tab.tables) >= requirement.minimum_table_count,
+            "document_control": not requirement.require_document_control
+            or _tab_has_document_control(tab, requirement.document_control_labels),
+            "header": not requirement.require_header or bool(tab_headers),
+            "footer": not requirement.require_footer or bool(tab_footers),
+            "minimum_content": len(tab_text) >= requirement.minimum_characters,
+            "no_placeholders": not requirement.reject_placeholders
+            or not PLACEHOLDER_PATTERN.search(tab_text),
+            "no_markdown": not requirement.reject_markdown
+            or not any(pattern.search(tab_text) for pattern in MARKDOWN_PATTERNS),
+        }
+        tab_issue_text = {
+            "expected_headings": "one or more required headings are missing",
+            "expected_sections": "one or more required sections are missing",
+            "minimum_tables": "fewer tables than required are present",
+            "document_control": "Document Control labels are missing",
+            "header": "a header is required",
+            "footer": "a footer is required",
+            "minimum_content": "minimum content length is not met",
+            "no_placeholders": "unresolved placeholders remain",
+            "no_markdown": "Markdown-like formatting remains",
+        }
+        for name, passed in tab_checks.items():
+            key = f"{key_prefix}:{name}"
+            checks[key] = passed
+            issue_labels[key] = f"Tab '{requirement.title}': {tab_issue_text[name]}."
+
+    for pair in requirements.structural_parity_pairs:
+        key = f"parity:{pair.left_title}:{pair.right_title}"
+        left = tabs_by_title.get(pair.left_title)
+        right = tabs_by_title.get(pair.right_title)
+        checks[key] = (
+            left is not None
+            and right is not None
+            and _tab_structure_signature(left) == _tab_structure_signature(right)
+        )
+        issue_labels[key] = (
+            f"Tabs '{pair.left_title}' and '{pair.right_title}' do not have structural parity."
+        )
     return DocumentQualityResult(
         artifact_ref=artifact_ref,
         source_id=source_id,
@@ -453,6 +1014,29 @@ def validate_authorized_document_structure(
         checks=checks,
         issues=[issue_labels[key] for key, passed in checks.items() if not passed],
     )
+
+
+def _tab_has_document_control(tab, labels: list[str]) -> bool:
+    if not labels:
+        return False
+    normalized = {
+        cell.text.strip().casefold()
+        for table in tab.tables
+        for cell in table.cells
+        if cell.text.strip()
+    }
+    return all(label.strip().casefold() in normalized for label in labels)
+
+
+def _tab_structure_signature(tab) -> tuple:
+    heading_levels = tuple(
+        paragraph.named_style_type
+        for paragraph in tab.paragraphs
+        if (paragraph.named_style_type or "").startswith("HEADING_")
+    )
+    list_count = sum(1 for paragraph in tab.paragraphs if paragraph.bullet)
+    table_shapes = tuple((table.rows, table.columns) for table in tab.tables)
+    return heading_levels, list_count, table_shapes
 
 
 def update_authorized_source_artifact(
