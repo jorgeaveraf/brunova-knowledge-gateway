@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.audit import correlation_id, emit_audit_event, request_audit_context
 from app.adapters.google_workspace.docs import GoogleDocsAdapter
@@ -19,6 +19,9 @@ from app.adapters.google_workspace.models import (
     WorkspaceStatusResponse,
 )
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
+from app.adapters.hubspot.mcp_client import account_metadata_from_result
+from app.adapters.hubspot.models import HubSpotConnectionStatus
+from app.adapters.hubspot.runtime import HubSpotRuntime, get_hubspot_runtime
 from app.config.settings import Settings, get_settings
 from app.knowledge import (
     discover_candidate_sources,
@@ -48,7 +51,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.19.1",
+    version="0.20.0",
     lifespan=lifespan,
 )
 app.add_middleware(GatewayAuthenticationMiddleware)
@@ -75,6 +78,17 @@ def get_docs_adapter() -> GoogleDocsAdapter:
 
 def get_sheets_adapter() -> GoogleSheetsAdapter:
     return GoogleSheetsAdapter(_get_valid_settings())
+
+
+def get_hubspot_adapter_runtime() -> HubSpotRuntime:
+    try:
+        return get_hubspot_runtime()
+    except ValueError as error:
+        raise WorkspaceAdapterError(
+            "hubspot_configuration_invalid",
+            "HubSpot integration is not configured.",
+            503,
+        ) from error
 
 
 def get_source_registry() -> SourceRegistry:
@@ -104,6 +118,9 @@ def get_source_policy() -> SourceAccessPolicy:
 WorkspaceAdapter = Annotated[GoogleWorkspaceAdapter, Depends(get_workspace_adapter)]
 DocsAdapter = Annotated[GoogleDocsAdapter, Depends(get_docs_adapter)]
 SheetsAdapter = Annotated[GoogleSheetsAdapter, Depends(get_sheets_adapter)]
+HubSpotAdapterRuntime = Annotated[
+    HubSpotRuntime, Depends(get_hubspot_adapter_runtime)
+]
 SourcePolicy = Annotated[SourceAccessPolicy, Depends(get_source_policy)]
 Registry = Annotated[SourceRegistry, Depends(get_source_registry)]
 
@@ -229,8 +246,52 @@ def capabilities():
             "source_governance",
             "mcp_read",
             "gateway_authentication",
+            "hubspot_governed_mcp",
         ]
     }
+
+
+@app.get("/auth/hubspot/connect")
+async def hubspot_connect(runtime: HubSpotAdapterRuntime) -> RedirectResponse:
+    authorization_url = await runtime.oauth.begin_authorization()
+    return RedirectResponse(
+        authorization_url,
+        status_code=302,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/auth/hubspot/callback", response_class=HTMLResponse)
+async def hubspot_callback(
+    state: Annotated[str, Query(min_length=32, max_length=512)],
+    runtime: HubSpotAdapterRuntime,
+    code: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
+    error: Annotated[str | None, Query(max_length=256)] = None,
+) -> HTMLResponse:
+    if error or not code:
+        runtime.token_store.consume_pending(state)
+        raise WorkspaceAdapterError(
+            "hubspot_oauth_denied", "HubSpot authorization was not completed.", 400
+        )
+    token = await runtime.oauth.exchange_code(code=code, state=state)
+    runtime.token_manager.remember(token)
+    try:
+        details = await runtime.mcp_client.call_tool("get_user_details", {})
+        runtime.token_store.update_account(account_metadata_from_result(details))
+    except Exception:
+        # The OAuth connection remains valid if downstream discovery is transiently
+        # unavailable. Status and the governed MCP tools can retry it safely.
+        pass
+    return HTMLResponse(
+        "<!doctype html><html><body><h1>HubSpot conectado</h1>"
+        "<p>La conexión se completó. Puedes cerrar esta ventana.</p></body></html>",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/auth/hubspot/status", response_model=HubSpotConnectionStatus)
+def hubspot_status(runtime: HubSpotAdapterRuntime) -> HubSpotConnectionStatus:
+    return runtime.token_store.status()
 
 
 @app.get("/workspace/status", response_model=WorkspaceStatusResponse)

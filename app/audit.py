@@ -33,6 +33,12 @@ def correlation_id(incoming: str | None) -> str:
 
 def request_audit_context(request: Request) -> tuple[str | None, str | None, str | None]:
     path = request.url.path
+    if path == "/auth/hubspot/connect":
+        return "hubspot_oauth_connect", None, "hubspot_connection"
+    if path == "/auth/hubspot/callback":
+        return "hubspot_oauth_callback", None, "hubspot_connection"
+    if path == "/auth/hubspot/status":
+        return "hubspot_connection_status", None, "hubspot_connection"
     if path == "/workspace/drive/list":
         return "list_files", None, "google_drive"
     if path == "/sources/discover":
@@ -79,6 +85,11 @@ def emit_audit_event(
         source_id=getattr(request.state, "source_id", None),
         source_classification=getattr(request.state, "classification", None),
         candidate_count=getattr(request.state, "candidate_count", None),
+        provider=(
+            "hubspot"
+            if resource_type and resource_type.startswith("hubspot")
+            else None
+        ),
     )
 
 
@@ -100,6 +111,9 @@ def emit_audit_record(
     audience: str | None = None,
     created_resource_id: str | None = None,
     destination_source_id: str | None = None,
+    provider: str | None = None,
+    operation_classification: str | None = None,
+    tool: str | None = None,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -139,6 +153,12 @@ def emit_audit_record(
         event["created_resource_id"] = created_resource_id
     if destination_source_id:
         event["destination_source_id"] = destination_source_id
+    if provider:
+        event["provider"] = provider
+    if operation_classification:
+        event["operation_classification"] = operation_classification
+    if tool:
+        event["tool"] = tool
     if error_code:
         event["error_code"] = error_code
     audit_logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))

@@ -154,6 +154,27 @@ def test_discovery_audit_contains_count_without_candidate_details(monkeypatch):
     assert "location_id" not in event
 
 
+def test_hubspot_http_audit_includes_provider_without_credentials(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+    request = SimpleNamespace(state=SimpleNamespace(request_id="hubspot-request-123"))
+
+    emit_audit_event(
+        request,
+        action="hubspot_oauth_callback",
+        resource_id=None,
+        resource_type="hubspot_connection",
+        result="success",
+        http_status=200,
+    )
+
+    event = json.loads(log_info.call_args.args[0])
+    assert event["provider"] == "hubspot"
+    assert "authorization" not in event
+    assert "token" not in event
+
+
 def test_proposal_audit_contains_receipt_without_review_reason(monkeypatch):
     monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
     log_info = Mock()

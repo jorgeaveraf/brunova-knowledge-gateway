@@ -438,7 +438,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_mcp_exposes_only_the_twenty_seven_governed_tools(monkeypatch):
+def test_mcp_exposes_only_governed_tools(monkeypatch):
     monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
 
     async def scenario():
@@ -474,8 +474,17 @@ def test_mcp_exposes_only_the_twenty_seven_governed_tools(monkeypatch):
         "inspect_document_tab",
         "create_document_tab",
         "rename_document_tab",
-        "delete_document_tab",
-    }
+            "delete_document_tab",
+            "hubspot_list_tools",
+            "hubspot_get_user_details",
+            "hubspot_search_crm_objects",
+            "hubspot_get_crm_objects",
+            "hubspot_search_properties",
+            "hubspot_get_properties",
+            "hubspot_search_owners",
+            "hubspot_call_read_tool",
+            "hubspot_manage_crm_objects",
+        }
     tab_tool_schemas = json.dumps(
         [
             tool.model_dump()

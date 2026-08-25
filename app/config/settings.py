@@ -17,6 +17,13 @@ class Settings:
     workspace_source_registry_path: str
     source_proposal_bucket: str = ""
     source_proposal_object: str = "source_proposals.yaml"
+    hubspot_mcp_client_id: str = ""
+    hubspot_mcp_app_id: str = ""
+    hubspot_mcp_server_url: str = "https://mcp.hubspot.com"
+    hubspot_mcp_redirect_uri: str = ""
+    hubspot_oauth_state_bucket: str = ""
+    hubspot_oauth_state_prefix: str = "oauth/hubspot"
+    hubspot_oauth_state_ttl_seconds: int = 600
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -70,6 +77,15 @@ class Settings:
             os.getenv("SOURCE_PROPOSAL_BUCKET", "").strip(),
             os.getenv("SOURCE_PROPOSAL_OBJECT", "").strip()
             or "source_proposals.yaml",
+            os.getenv("HUBSPOT_MCP_CLIENT_ID", "").strip(),
+            os.getenv("HUBSPOT_MCP_APP_ID", "").strip(),
+            os.getenv("HUBSPOT_MCP_SERVER_URL", "").strip()
+            or "https://mcp.hubspot.com",
+            os.getenv("HUBSPOT_MCP_REDIRECT_URI", "").strip(),
+            os.getenv("HUBSPOT_OAUTH_STATE_BUCKET", "").strip(),
+            os.getenv("HUBSPOT_OAUTH_STATE_PREFIX", "").strip()
+            or "oauth/hubspot",
+            _positive_environment_int("HUBSPOT_OAUTH_STATE_TTL_SECONDS", 600),
         )
 
 
@@ -96,3 +112,14 @@ def _environment_bool(name: str, *, default: bool) -> bool:
     if value in ("0", "false", "no", "off"):
         return False
     raise ValueError(f"{name} must be true or false")
+
+
+def _positive_environment_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name, "").strip()
+    try:
+        value = int(raw_value) if raw_value else default
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if value < 1:
+        raise ValueError(f"{name} must be positive")
+    return value

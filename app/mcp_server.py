@@ -2,8 +2,7 @@
 
 import os
 from collections.abc import Callable
-from typing import TypeVar
-from typing import Literal
+from typing import Any, Literal, TypeVar
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
@@ -19,6 +18,9 @@ from app.adapters.google_workspace.models import (
     SheetRangeContent,
     SourceArtifactMutationResult,
 )
+from app.adapters.hubspot.mcp_client import account_metadata_from_result
+from app.adapters.hubspot.models import HubSpotToolDescriptor, HubSpotToolResult
+from app.adapters.hubspot.runtime import get_hubspot_runtime
 from app.audit import correlation_id, emit_audit_record
 from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
@@ -160,14 +162,20 @@ class OperationHistoryToolResult(BaseModel):
     request_id: str
 
 
+class HubSpotToolListResult(BaseModel):
+    tools: list[HubSpotToolDescriptor]
+    request_id: str
+
+
 mcp_server = MCPServer(
     name="brunova-knowledge-gateway",
-    version="0.19.1",
+    version="0.20.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
         "execute full capability-gated Google Workspace CRUD operations with an "
         "external "
-        "approval reference. Safe operation history is available without direct "
+        "approval reference. Governed HubSpot Remote MCP read and approved mutation "
+        "tools are available without exposing HubSpot credentials. Safe operation history is available without direct "
         "log access. No tool approves sources or mutates Source Registry."
     ),
 )
@@ -1226,6 +1234,199 @@ def retrieve_sheet_range(
         source_id=source_id,
         resource_id=spreadsheet_id,
         resource_type="google_sheet",
+    )
+
+
+async def _execute_hubspot_tool(
+    *,
+    ctx: Context,
+    tool_name: str,
+    arguments: dict[str, Any],
+    approval_reference: str | None = None,
+    explicit_intent: bool = False,
+) -> HubSpotToolResult:
+    request_id = _mcp_request_id(ctx)
+    runtime = get_hubspot_runtime()
+    decision = runtime.policy.classify(tool_name)
+    try:
+        result = await runtime.mcp_client.call_tool(
+            tool_name,
+            arguments,
+            approval_reference=approval_reference,
+            explicit_intent=explicit_intent,
+        )
+        if tool_name == "get_user_details":
+            runtime.token_store.update_account(account_metadata_from_result(result))
+        emit_audit_record(
+            request_id=request_id,
+            action="hubspot_tool_call",
+            resource_id=None,
+            resource_type="hubspot_mcp_tool",
+            result="success",
+            http_status=200,
+            provider="hubspot",
+            tool=tool_name,
+            operation_classification=decision.classification,
+            approval_reference=approval_reference,
+        )
+        return HubSpotToolResult(tool=tool_name, result=result, request_id=request_id)
+    except WorkspaceAdapterError as error:
+        emit_audit_record(
+            request_id=request_id,
+            action="hubspot_tool_call",
+            resource_id=None,
+            resource_type="hubspot_mcp_tool",
+            result="rejected" if error.status_code < 500 else "error",
+            http_status=error.status_code,
+            error_code=error.code,
+            provider="hubspot",
+            tool=tool_name,
+            operation_classification=decision.classification,
+            approval_reference=approval_reference,
+        )
+        raise RuntimeError(f"{error.code}: {error.message}") from error
+    except Exception:
+        emit_audit_record(
+            request_id=request_id,
+            action="hubspot_tool_call",
+            resource_id=None,
+            resource_type="hubspot_mcp_tool",
+            result="error",
+            http_status=500,
+            error_code="unhandled_error",
+            provider="hubspot",
+            tool=tool_name,
+            operation_classification=decision.classification,
+            approval_reference=approval_reference,
+        )
+        raise
+
+
+@mcp_server.tool()
+async def hubspot_list_tools(ctx: Context) -> HubSpotToolListResult:
+    """List live HubSpot tools with Brunova's safe governance classification."""
+
+    request_id = _mcp_request_id(ctx)
+    try:
+        tools = await get_hubspot_runtime().mcp_client.list_tools()
+        emit_audit_record(
+            request_id=request_id,
+            action="hubspot_list_tools",
+            resource_id=None,
+            resource_type="hubspot_mcp_tool_catalog",
+            result="success",
+            http_status=200,
+            provider="hubspot",
+            operation_classification="read",
+        )
+        return HubSpotToolListResult(tools=tools, request_id=request_id)
+    except WorkspaceAdapterError as error:
+        emit_audit_record(
+            request_id=request_id,
+            action="hubspot_list_tools",
+            resource_id=None,
+            resource_type="hubspot_mcp_tool_catalog",
+            result="error",
+            http_status=error.status_code,
+            error_code=error.code,
+            provider="hubspot",
+            operation_classification="read",
+        )
+        raise RuntimeError(f"{error.code}: {error.message}") from error
+
+
+@mcp_server.tool()
+async def hubspot_get_user_details(ctx: Context) -> HubSpotToolResult:
+    """Return HubSpot account, user, permission, and capability details."""
+
+    return await _execute_hubspot_tool(ctx=ctx, tool_name="get_user_details", arguments={})
+
+
+@mcp_server.tool()
+async def hubspot_search_crm_objects(
+    arguments: dict[str, Any], ctx: Context
+) -> HubSpotToolResult:
+    """Search HubSpot CRM objects using the official downstream tool arguments."""
+
+    return await _execute_hubspot_tool(
+        ctx=ctx, tool_name="search_crm_objects", arguments=arguments
+    )
+
+
+@mcp_server.tool()
+async def hubspot_get_crm_objects(
+    arguments: dict[str, Any], ctx: Context
+) -> HubSpotToolResult:
+    """Fetch HubSpot CRM objects using the official downstream tool arguments."""
+
+    return await _execute_hubspot_tool(
+        ctx=ctx, tool_name="get_crm_objects", arguments=arguments
+    )
+
+
+@mcp_server.tool()
+async def hubspot_search_properties(
+    arguments: dict[str, Any], ctx: Context
+) -> HubSpotToolResult:
+    """Search HubSpot CRM property definitions."""
+
+    return await _execute_hubspot_tool(
+        ctx=ctx, tool_name="search_properties", arguments=arguments
+    )
+
+
+@mcp_server.tool()
+async def hubspot_get_properties(
+    arguments: dict[str, Any], ctx: Context
+) -> HubSpotToolResult:
+    """Fetch full HubSpot property definitions."""
+
+    return await _execute_hubspot_tool(
+        ctx=ctx, tool_name="get_properties", arguments=arguments
+    )
+
+
+@mcp_server.tool()
+async def hubspot_search_owners(
+    arguments: dict[str, Any], ctx: Context
+) -> HubSpotToolResult:
+    """Search HubSpot CRM record owners."""
+
+    return await _execute_hubspot_tool(
+        ctx=ctx, tool_name="search_owners", arguments=arguments
+    )
+
+
+@mcp_server.tool()
+async def hubspot_call_read_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    ctx: Context,
+) -> HubSpotToolResult:
+    """Call a live HubSpot tool only when it is explicitly classified read-only."""
+
+    return await _execute_hubspot_tool(
+        ctx=ctx,
+        tool_name=tool_name,
+        arguments=arguments,
+    )
+
+
+@mcp_server.tool()
+async def hubspot_manage_crm_objects(
+    arguments: dict[str, Any],
+    approval_reference: str,
+    explicit_intent: bool,
+    ctx: Context,
+) -> HubSpotToolResult:
+    """Create or update HubSpot CRM data after explicit human approval."""
+
+    return await _execute_hubspot_tool(
+        ctx=ctx,
+        tool_name="manage_crm_objects",
+        arguments=arguments,
+        approval_reference=approval_reference,
+        explicit_intent=explicit_intent,
     )
 
 

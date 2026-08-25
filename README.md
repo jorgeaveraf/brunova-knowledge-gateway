@@ -8,11 +8,12 @@ Responsabilidad:
 - aplicar políticas antes de interactuar con sistemas externos;
 - centralizar adaptadores hacia sistemas empresariales.
 
-Primera capacidad prevista:
+Capacidades empresariales:
 
 - Google Workspace.
+- HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 
-Arquitectura v0.19.1:
+Arquitectura v0.20.0:
 
 Agents
 ↓
@@ -27,6 +28,13 @@ Source Registry y Policies
 Adapters
 ↓
 External Systems
+
+Para HubSpot, el último tramo es:
+
+```text
+Management Agent → Brunova MCP → Governed HubSpot Adapter
+                 → HubSpot Remote MCP → HubSpot CRM
+```
 
 Las propuestas pendientes siguen una rama separada y no autoritativa:
 
@@ -501,8 +509,9 @@ Todas las capacidades HTTP y MCP están protegidas por defecto mediante:
 Authorization: Bearer <token administrado fuera del repositorio>
 ```
 
-Solo `/health`, `/docs`, `/redoc` y `/openapi.json` permanecen públicos. Esta
-lista es explícita: cualquier endpoint futuro queda protegido automáticamente.
+Solo `/health`, `/docs`, `/redoc`, `/openapi.json` y el callback exacto
+`/auth/hubspot/callback` permanecen públicos. Esta lista es explícita: cualquier
+endpoint futuro queda protegido automáticamente.
 El middleware autentica al consumidor antes de ejecutar handlers, policies,
 adapters o tools MCP. La comparación del token es constante y el valor nunca se
 registra en auditoría.
@@ -545,6 +554,58 @@ gcloud run services update brunova-knowledge-gateway \
 La identidad de runtime debe tener `roles/secretmanager.secretAccessor` sobre
 ese secreto. La rotación se realiza agregando una nueva versión y desplegando
 una revisión nueva; el valor no pasa por Git ni por la imagen Docker.
+
+## HubSpot Remote MCP
+
+El Gateway es el único cliente de `https://mcp.hubspot.com`. Los Management
+Agents conservan una sola conexión MCP con Brunova y nunca reciben el client
+secret, access token ni refresh token de HubSpot.
+
+Variables no secretas:
+
+- `HUBSPOT_MCP_CLIENT_ID`: Client ID del MCP Auth App.
+- `HUBSPOT_MCP_APP_ID`: ID informativo del app, cuando aplique.
+- `HUBSPOT_MCP_SERVER_URL`: `https://mcp.hubspot.com`.
+- `HUBSPOT_MCP_REDIRECT_URI`: callback HTTPS registrado en HubSpot.
+- `HUBSPOT_OAUTH_STATE_BUCKET`: bucket existente de estado del Gateway.
+- `HUBSPOT_OAUTH_STATE_PREFIX`: por defecto `oauth/hubspot`.
+- `HUBSPOT_OAUTH_STATE_TTL_SECONDS`: por defecto 600.
+
+`HUBSPOT_MCP_CLIENT_SECRET` es secreto. Debe almacenarse en Google Secret
+Manager e inyectarse directamente como variable de Cloud Run. Nunca se agrega
+a `.env.example`, salvo con valor vacío, ni se incorpora en la imagen.
+
+El flujo operativo es:
+
+1. Un operador autenticado abre `GET /auth/hubspot/connect`.
+2. El Gateway crea state single-use y PKCE S256, los guarda temporalmente en
+   `oauth/hubspot/pending/` y redirige a HubSpot.
+3. HubSpot regresa exclusivamente a `GET /auth/hubspot/callback`, que valida y
+   consume el state antes de intercambiar el code.
+4. El refresh token se cifra antes de persistirse en
+   `oauth/hubspot/connection.json`; el access token queda solo en memoria.
+5. `GET /auth/hubspot/status`, protegido por el token Brunova, devuelve solo
+   estado y metadata segura de cuenta.
+
+Cada refresh toma un lease mediante `if_generation_match`. La rotación escribe
+el refresh token nuevo con una segunda precondición de generación, evitando que
+dos instancias de Cloud Run consuman simultáneamente el mismo token single-use.
+Un refresh inválido marca la conexión como `reauthorization_required`.
+
+El catálogo downstream se consulta mediante `hubspot_list_tools`; cada tool se
+clasifica como `read`, `mutation` o `unknown`. Las lecturas explícitamente
+permitidas se exponen con prefijo `hubspot_`. `hubspot_manage_crm_objects`
+requiere `explicit_intent=true` y un `approval_reference` externo. Las tools
+desconocidas fallan cerradas hasta ser clasificadas en código y tests. Auditoría
+registra provider, tool, clasificación, resultado, correlation ID y approval
+cuando aplica, sin incluir payload CRM completo ni credenciales.
+
+La autorización humana inicial se realiza después del deploy: abrir
+`/auth/hubspot/connect` con `Authorization: Bearer <token Brunova>`, seleccionar
+la cuenta, revisar permisos y autorizar. Después consultar
+`/auth/hubspot/status`, ejecutar `hubspot_get_user_details`, listar el catálogo y
+hacer una consulta read-only controlada. La primera validación no debe ejecutar
+`hubspot_manage_crm_objects`.
 
 ### Configuración de un cliente MCP
 

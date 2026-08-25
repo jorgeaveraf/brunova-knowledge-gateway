@@ -23,6 +23,7 @@ PUBLIC_PATHS = frozenset(
         "/docs/oauth2-redirect",
         "/openapi.json",
         "/redoc",
+        "/auth/hubspot/callback",
     }
 )
 
