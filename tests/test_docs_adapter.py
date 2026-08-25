@@ -392,6 +392,41 @@ def test_structured_request_allowlist_covers_text_lists_tables_and_segments():
     assert body_zero.value.code == "document_operation_invalid"
 
 
+def test_tab_scoped_header_and_footer_accept_first_section_break_at_zero():
+    resolver = lambda value: {"tab-en": "internal-en"}[value]
+
+    header = _operation_requests(
+        CreateHeaderOperation(
+            operation="create_header", tab_ref="tab-en", section_index=0
+        ),
+        tab_id_resolver=resolver,
+    )
+    footer = _operation_requests(
+        CreateFooterOperation(
+            operation="create_footer", tab_ref="tab-en", section_index=0
+        ),
+        tab_id_resolver=resolver,
+    )
+
+    expected_location = {"index": 0, "tabId": "internal-en"}
+    assert header == [
+        {
+            "createHeader": {
+                "type": "DEFAULT",
+                "sectionBreakLocation": expected_location,
+            }
+        }
+    ]
+    assert footer == [
+        {
+            "createFooter": {
+                "type": "DEFAULT",
+                "sectionBreakLocation": expected_location,
+            }
+        }
+    ]
+
+
 def test_structured_edit_fails_safely_on_stale_revision():
     response = Mock(status=400, reason="Bad Request")
     update_request = Mock()

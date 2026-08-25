@@ -715,10 +715,10 @@ def _color_hex(color: dict[str, Any] | None) -> str | None:
 
 
 def _location(index: int, *, segment_id: str = "", tab_id: str | None = None) -> dict[str, Any]:
-    if index == 0 and not segment_id:
+    if index == 0 and not segment_id and not tab_id:
         raise WorkspaceAdapterError(
             "document_operation_invalid",
-            "Index zero is valid only inside a header, footer, or footnote segment.",
+            "Index zero is valid only inside a header, footer, footnote, or explicit tab segment.",
             422,
         )
     result: dict[str, Any] = {"index": index}

@@ -48,7 +48,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.19.0",
+    version="0.19.1",
     lifespan=lifespan,
 )
 app.add_middleware(GatewayAuthenticationMiddleware)

@@ -224,14 +224,14 @@ class TableCellStyleOperation(TableLocationOperation):
 class CreateHeaderOperation(BaseModel):
     operation: Literal["create_header"]
     header_type: Literal["DEFAULT"] = "DEFAULT"
-    section_index: int | None = Field(default=None, ge=1)
+    section_index: int | None = Field(default=None, ge=0)
     tab_ref: str | None = None
 
 
 class CreateFooterOperation(BaseModel):
     operation: Literal["create_footer"]
     footer_type: Literal["DEFAULT"] = "DEFAULT"
-    section_index: int | None = Field(default=None, ge=1)
+    section_index: int | None = Field(default=None, ge=0)
     tab_ref: str | None = None
 
 

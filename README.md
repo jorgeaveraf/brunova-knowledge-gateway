@@ -12,7 +12,7 @@ Primera capacidad prevista:
 
 - Google Workspace.
 
-Arquitectura v0.19:
+Arquitectura v0.19.1:
 
 Agents
 ↓
