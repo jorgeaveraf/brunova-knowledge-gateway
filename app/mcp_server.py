@@ -1,12 +1,14 @@
 """Governed MCP interface backed exclusively by Knowledge Gateway operations."""
 
 import os
+import time
 from collections.abc import Callable
 from typing import Any, Literal, TypeVar
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, TextContent, Tool as MCPTool
 from pydantic import BaseModel
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
@@ -21,6 +23,11 @@ from app.adapters.google_workspace.models import (
 from app.adapters.hubspot.mcp_client import account_metadata_from_result
 from app.adapters.hubspot.models import HubSpotToolDescriptor, HubSpotToolResult
 from app.adapters.hubspot.runtime import get_hubspot_runtime
+from app.adapters.n8n.models import (
+    N8NStatusResult,
+    N8NToolListResult,
+)
+from app.adapters.n8n.runtime import get_n8n_client
 from app.audit import correlation_id, emit_audit_record
 from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
@@ -167,9 +174,103 @@ class HubSpotToolListResult(BaseModel):
     request_id: str
 
 
-mcp_server = MCPServer(
+class BrunovaMCPServer(MCPServer):
+    """MCP server that projects the live n8n catalog without a second policy."""
+
+    async def list_tools(self) -> list[MCPTool]:
+        tools = await super().list_tools()
+        try:
+            downstream = await get_n8n_client().list_tools()
+        except Exception:
+            # Provider isolation: n8n outages never hide native/Workspace/HubSpot tools.
+            return tools
+        occupied = {tool.name for tool in tools}
+        for descriptor in downstream:
+            exposed_name = _n8n_exposed_name(descriptor.name, occupied)
+            occupied.add(exposed_name)
+            tools.append(MCPTool(
+                name=exposed_name,
+                description=descriptor.description,
+                input_schema=descriptor.input_schema,
+                _meta={**descriptor.metadata, "provider": "n8n", "downstream_tool": descriptor.name},
+            ))
+        return tools
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: Context | None = None,
+    ) -> CallToolResult:
+        if not name.startswith("n8n_") or name in {"n8n_status", "n8n_list_tools"}:
+            return await super().call_tool(name, arguments, context)
+        client = get_n8n_client()
+        tools = await client.list_tools()
+        occupied = {"n8n_status", "n8n_list_tools"}
+        mapping: dict[str, str] = {}
+        for descriptor in tools:
+            exposed = _n8n_exposed_name(descriptor.name, occupied)
+            occupied.add(exposed)
+            mapping[exposed] = descriptor.name
+        downstream_name = mapping.get(name)
+        if downstream_name is None:
+            return CallToolResult(
+                content=[TextContent(type="text", text="n8n_tool_unavailable: The n8n tool is not currently exposed.")],
+                is_error=True,
+            )
+        request_id = correlation_id(str(context.request_id) if context else None)
+        approval_reference = _approval_reference(context)
+        started = time.monotonic()
+        try:
+            result = await client.call_tool(downstream_name, arguments)
+            downstream_failed = bool(result.get("isError", False)) if isinstance(result, dict) else False
+            emit_audit_record(
+                request_id=request_id, action="n8n_tool_call", resource_id=None,
+                resource_type="n8n_mcp_tool",
+                result="error" if downstream_failed else "success",
+                http_status=502 if downstream_failed else 200,
+                provider="n8n", tool=downstream_name,
+                approval_reference=approval_reference,
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return CallToolResult.model_validate(result)
+        except WorkspaceAdapterError as error:
+            emit_audit_record(
+                request_id=request_id, action="n8n_tool_call", resource_id=None,
+                resource_type="n8n_mcp_tool",
+                result="rejected" if error.status_code < 500 else "error",
+                http_status=error.status_code, error_code=error.code,
+                provider="n8n", tool=downstream_name,
+                approval_reference=approval_reference,
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"{error.code}: {error.message}")],
+                is_error=True,
+            )
+
+
+def _n8n_exposed_name(downstream_name: str, occupied: set[str]) -> str:
+    preferred = f"n8n_{downstream_name}"
+    return f"n8n_downstream_{downstream_name}" if preferred in occupied else preferred
+
+
+def _approval_reference(context: Context | None) -> str | None:
+    if context is None:
+        return None
+    try:
+        meta = context.request_context.meta
+    except ValueError:
+        return None
+    if meta is None:
+        return None
+    value = meta.get("approval_reference") if hasattr(meta, "get") else getattr(meta, "approval_reference", None)
+    return str(value)[:256] if value else None
+
+
+mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.20.0",
+    version="0.21.0",
     instructions=(
         "Read authorized Brunova knowledge, manage pending source proposals, and "
         "execute full capability-gated Google Workspace CRUD operations with an "
@@ -1333,6 +1434,57 @@ async def hubspot_list_tools(ctx: Context) -> HubSpotToolListResult:
             operation_classification="read",
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
+
+
+@mcp_server.tool()
+async def n8n_status(ctx: Context) -> N8NStatusResult:
+    """Return safe n8n MCP connectivity and live catalog status."""
+
+    request_id = _mcp_request_id(ctx)
+    started = time.monotonic()
+    try:
+        status = await get_n8n_client().status()
+    except ValueError:
+        result = N8NStatusResult(
+            configured=False, connected=False, mcp_initialized=False,
+            tool_count=0, request_id=request_id,
+        )
+    else:
+        result = N8NStatusResult(**status.model_dump(), request_id=request_id)
+    emit_audit_record(
+        request_id=request_id, action="n8n_status", resource_id=None,
+        resource_type="n8n_mcp_status",
+        result="success" if result.connected else "error",
+        http_status=200 if result.connected else 503, provider="n8n",
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
+@mcp_server.tool()
+async def n8n_list_tools(ctx: Context) -> N8NToolListResult:
+    """List the current unfiltered n8n MCP catalog from live discovery."""
+
+    request_id = _mcp_request_id(ctx)
+    started = time.monotonic()
+    try:
+        tools = await get_n8n_client().list_tools(force_refresh=True)
+        emit_audit_record(
+            request_id=request_id, action="n8n_list_tools", resource_id=None,
+            resource_type="n8n_mcp_tool_catalog", result="success", http_status=200,
+            provider="n8n", duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        return N8NToolListResult(tools=tools, request_id=request_id)
+    except (ValueError, WorkspaceAdapterError) as error:
+        code = error.code if isinstance(error, WorkspaceAdapterError) else "n8n_not_configured"
+        status = error.status_code if isinstance(error, WorkspaceAdapterError) else 503
+        emit_audit_record(
+            request_id=request_id, action="n8n_list_tools", resource_id=None,
+            resource_type="n8n_mcp_tool_catalog", result="error", http_status=status,
+            error_code=code, provider="n8n",
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        raise RuntimeError(f"{code}: n8n MCP catalog is unavailable") from error
 
 
 @mcp_server.tool()

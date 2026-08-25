@@ -12,8 +12,9 @@ Capacidades empresariales:
 
 - Google Workspace.
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
+- n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.20.0:
+Arquitectura v0.21.0:
 
 Agents
 ↓
@@ -629,6 +630,41 @@ independiente para cada consumidor.
 
 El SDK MCP 2.x requiere Python 3.10 o posterior. La imagen de Cloud Run usa
 Python 3.12.
+
+## n8n MCP full access
+
+El Gateway usa el SDK MCP oficial como cliente downstream. La configuración
+completa se inyecta en `N8N_MCP_JSON` desde un único secreto de Google Secret
+Manager; producción no lee `.env`. `N8N_DISCOVERY_TTL_SECONDS` (60 por defecto)
+y `N8N_TIMEOUT_SECONDS` (30 por defecto) son configuración no sensible.
+
+Discovery conserva nombre, descripción, input schema y metadata segura. Cada
+tool se proyecta como `n8n_<downstream_tool_name>`; si ese nombre colisiona con
+una tool nativa se usa `n8n_downstream_<downstream_tool_name>`. `n8n_list_tools`
+fuerza discovery actual y `n8n_status` expone únicamente estado, conteo y
+versiones de protocolo/servidor cuando están disponibles.
+
+No existe allowlist, clasificación read/mutation, activation flag ni policy
+engine n8n en el Gateway. Todo lo que n8n MCP exponga queda disponible. El TTL
+permite altas y bajas sin deploy; un error de discovery vacía el catálogo n8n
+sin afectar `/health`, Workspace, HubSpot o las tools nativas.
+
+Auditoría registra provider `n8n`, tool downstream, resultado, request y
+correlation ID, `approval_reference` recibido como metadata MCP y duración. No
+registra argumentos, respuestas completas, URL, headers ni credenciales.
+
+Configuración productiva:
+
+```bash
+gcloud secrets create brunova-n8n-mcp-json \
+  --project=brunova-ai-platform --replication-policy=automatic
+gcloud secrets versions add brunova-n8n-mcp-json \
+  --project=brunova-ai-platform --data-file=-
+gcloud run services update brunova-knowledge-gateway \
+  --project=brunova-ai-platform --region=us-central1 \
+  --update-secrets=N8N_MCP_JSON=brunova-n8n-mcp-json:latest \
+  --update-env-vars=N8N_DISCOVERY_TTL_SECONDS=60,N8N_TIMEOUT_SECONDS=30
+```
 
 Las APIs de Drive, Docs, Sheets, IAM Service Account Credentials y Cloud Logging
 deben estar habilitadas en el proyecto de GCP.

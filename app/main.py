@@ -51,7 +51,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.20.0",
+    version="0.21.0",
     lifespan=lifespan,
 )
 app.add_middleware(GatewayAuthenticationMiddleware)
@@ -247,6 +247,7 @@ def capabilities():
             "mcp_read",
             "gateway_authentication",
             "hubspot_governed_mcp",
+            "n8n_full_access_mcp",
         ]
     }
 

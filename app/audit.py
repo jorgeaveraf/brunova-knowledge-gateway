@@ -114,6 +114,7 @@ def emit_audit_record(
     provider: str | None = None,
     operation_classification: str | None = None,
     tool: str | None = None,
+    duration_ms: int | None = None,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -159,6 +160,8 @@ def emit_audit_record(
         event["operation_classification"] = operation_classification
     if tool:
         event["tool"] = tool
+    if duration_ms is not None:
+        event["duration_ms"] = duration_ms
     if error_code:
         event["error_code"] = error_code
     audit_logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))

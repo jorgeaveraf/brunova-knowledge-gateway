@@ -24,6 +24,8 @@ class Settings:
     hubspot_oauth_state_bucket: str = ""
     hubspot_oauth_state_prefix: str = "oauth/hubspot"
     hubspot_oauth_state_ttl_seconds: int = 600
+    n8n_discovery_ttl_seconds: int = 60
+    n8n_timeout_seconds: int = 30
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -86,6 +88,8 @@ class Settings:
             os.getenv("HUBSPOT_OAUTH_STATE_PREFIX", "").strip()
             or "oauth/hubspot",
             _positive_environment_int("HUBSPOT_OAUTH_STATE_TTL_SECONDS", 600),
+            _positive_environment_int("N8N_DISCOVERY_TTL_SECONDS", 60),
+            _positive_environment_int("N8N_TIMEOUT_SECONDS", 30),
         )
 
 
