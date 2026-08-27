@@ -237,7 +237,11 @@ def resolve_authorized_source_artifact(
         raise WorkspaceAdapterError(
             "artifact_type_invalid", "The requested artifact type is unsupported.", 422
         )
-    matches = workspace_adapter.find_resources(name=resolved_name, mime_type=mime_type)
+    matches = workspace_adapter.find_resources(
+        name=resolved_name,
+        mime_type=mime_type,
+        source=allowed_source,
+    )
     authorized = []
     for resource in matches:
         try:

@@ -4,6 +4,7 @@ import re
 from enum import Enum
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
+from app.auth.principals import active_principal, authorize_workspace_operation
 from app.policies.source_access import AllowedSource, SourceAccessPolicy
 from app.source_registry import SourceRegistry, SourceType
 
@@ -42,7 +43,11 @@ class ContentMutationPolicy:
         operation: MutationOperation,
         approval_reference: str,
     ) -> AllowedSource:
-        if self.normalized_approval_reference(approval_reference) is None:
+        principal = active_principal()
+        if (
+            principal.type == "management"
+            and self.normalized_approval_reference(approval_reference) is None
+        ):
             raise WorkspaceAdapterError(
                 "mutation_approval_required",
                 "A valid external approval reference is required for mutations.",
@@ -56,6 +61,12 @@ class ContentMutationPolicy:
                 "The requested knowledge source is not registered.",
                 404,
             ) from error
+        if principal.type == "developer":
+            authorize_workspace_operation(
+                principal,
+                capability=operation.value,
+                source=source,
+            )
         allowed_source = self._source_access_policy.authorize_source(
             source,
             require_read=False,

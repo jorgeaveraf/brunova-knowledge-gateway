@@ -14,6 +14,13 @@ from app.adapters.google_workspace.models import (
     SourceMetadata,
     WorkspaceResource,
 )
+from app.auth.principals import (
+    CapabilityScope,
+    Principal,
+    ProviderScope,
+    bind_principal,
+    reset_principal,
+)
 from app.config.settings import Settings
 from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
@@ -149,7 +156,8 @@ class FakeWorkspaceAdapter:
             )
         ]
 
-    def find_resources(self, *, name, mime_type=None):
+    def find_resources(self, *, name, mime_type=None, source=None):
+        assert source is not None
         resource = self.get_resource("document_12345")
         return [replace(resource, name=name)] if mime_type in (None, resource.mime_type) else []
 
@@ -898,6 +906,123 @@ def test_artifact_resolution_rejects_missing_ambiguous_and_out_of_scope(monkeypa
     assert "artifact_not_found" in missing.content[0].text
     assert "artifact_selector_ambiguous" in ambiguous.content[0].text
     assert "artifact_not_found" in out_of_scope.content[0].text
+
+
+def test_artifact_resolution_immediately_finds_new_nested_manual_artifact(monkeypatch):
+    gateway_runtime = runtime()
+    nested = replace(
+        gateway_runtime.workspace_adapter.get_resource("document_12345"),
+        id="manual_document_123",
+        name="New Manual Manifest",
+        ancestor_ids=("nested_folder_123", "allowed_folder_123"),
+        parent_ids=("nested_folder_123",),
+    )
+    live_matches = []
+    gateway_runtime.workspace_adapter.find_resources = Mock(
+        side_effect=lambda **_: list(live_matches)
+    )
+    gateway_runtime.workspace_adapter.logical_path = Mock(
+        return_value="Career Ops/Delivery/Nested/New Manual Manifest"
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            missing = await client.call_tool(
+                "resolve_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "logical_path": "Delivery/Nested/New Manual Manifest",
+                    "artifact_type": "document",
+                },
+            )
+            live_matches.append(nested)
+            found = await client.call_tool(
+                "resolve_source_artifact",
+                {
+                    "source_id": "career_ops",
+                    "logical_path": "Delivery/Nested/New Manual Manifest",
+                    "artifact_type": "document",
+                },
+            )
+            return missing, found
+
+    missing, found = run(scenario())
+
+    assert "artifact_not_found" in missing.content[0].text
+    assert found.is_error is False
+    assert found.structured_content["artifact_ref"]
+    assert gateway_runtime.workspace_adapter.find_resources.call_args.kwargs[
+        "source"
+    ].definition.id == "career_ops"
+
+
+def test_developer_create_update_and_move_need_no_approval(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+    principal = Principal(
+        id="developer_test",
+        type="developer",
+        status="active",
+        providers=ProviderScope(workspace=True),
+        sources=frozenset({"career_ops"}),
+        capabilities=CapabilityScope(read=True, create=True, update=True, move=True),
+    )
+
+    async def scenario():
+        token = bind_principal(principal)
+        try:
+            async with Client(mcp_module.mcp_server) as client:
+                created = await client.call_tool(
+                    "create_source_artifact",
+                    {"source_id": "career_ops", "name": "Scoped", "type": "document"},
+                )
+                updated = await client.call_tool(
+                    "update_source_artifact",
+                    {
+                        "source_id": "career_ops",
+                        "document_id": "created_document_123",
+                        "change": "Scoped update.",
+                    },
+                )
+                moved = await client.call_tool(
+                    "move_source_artifact",
+                    {
+                        "source_id": "career_ops",
+                        "artifact_id": "created_document_123",
+                        "destination_folder_id": "destination_folder_123",
+                    },
+                )
+                return created, updated, moved
+        finally:
+            reset_principal(token)
+
+    created, updated, moved = run(scenario())
+
+    assert all(not result.is_error for result in (created, updated, moved))
+    assert gateway_runtime.workspace_adapter.created == [("career_ops", "Scoped")]
+    assert gateway_runtime.workspace_adapter.moved == [
+        ("created_document_123", "destination_folder_123")
+    ]
+    mutation_audits = [
+        call.kwargs
+        for call in audit.call_args_list
+        if call.kwargs["action"] in {
+            "create_source_artifact",
+            "update_source_artifact",
+            "move_source_artifact",
+        }
+    ]
+    assert {item["authorization_mode"] for item in mutation_audits} == {
+        "principal_scope"
+    }
+    assert {item["capability"] for item in mutation_audits} == {
+        "create",
+        "update",
+        "move",
+    }
 
 
 def test_structured_mutations_require_approval_and_enforce_source_scope(monkeypatch):

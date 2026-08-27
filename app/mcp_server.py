@@ -401,11 +401,12 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.22.0",
+    version="0.23.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
-        "their existing approval requirements."
+        "management approval semantics while developer mutations are authorized "
+        "by principal scope."
     ),
 )
 
@@ -459,9 +460,16 @@ def _execute_tool(
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
     capability = TOOL_CAPABILITIES.get(action)
+    principal = active_principal()
+    authorization_mode = (
+        "principal_scope"
+        if principal.type == "developer"
+        else "external_approval"
+        if capability in {"create", "update", "move", "delete", "share", "convert"}
+        else None
+    )
     try:
         runtime = get_runtime_gateway()
-        principal = active_principal()
         if principal.type == "developer" and capability is None:
             raise WorkspaceAdapterError(
                 "tool_denied", "The requested operation is not authorized.", 403
@@ -506,6 +514,8 @@ def _execute_tool(
             destination_source_id=destination_source_id,
             provider="workspace" if capability else "gateway",
             tool=action,
+            capability=capability,
+            authorization_mode=authorization_mode,
         )
         return result
     except WorkspaceAdapterError as error:
@@ -524,6 +534,8 @@ def _execute_tool(
             destination_source_id=destination_source_id,
             provider="workspace" if capability else "gateway",
             tool=action,
+            capability=capability,
+            authorization_mode=authorization_mode,
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
     except Exception:
@@ -542,6 +554,8 @@ def _execute_tool(
             destination_source_id=destination_source_id,
             provider="workspace" if capability else "gateway",
             tool=action,
+            capability=capability,
+            authorization_mode=authorization_mode,
         )
         raise
 

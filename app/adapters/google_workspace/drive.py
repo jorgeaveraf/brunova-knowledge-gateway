@@ -253,8 +253,14 @@ class GoogleWorkspaceAdapter:
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
 
-    def find_resources(self, *, name: str, mime_type: str | None = None) -> list[WorkspaceResource]:
-        """Resolve exact Drive names while keeping raw identifiers adapter-internal."""
+    def find_resources(
+        self,
+        *,
+        name: str,
+        mime_type: str | None = None,
+        source: AllowedSource | None = None,
+    ) -> list[WorkspaceResource]:
+        """Resolve exact names live in the selected source's Drive corpus."""
 
         escaped_name = name.replace("\\", "\\\\").replace("'", "\\'")
         query = f"name = '{escaped_name}' and trashed=false"
@@ -262,21 +268,41 @@ class GoogleWorkspaceAdapter:
             escaped_mime = mime_type.replace("'", "\\'")
             query += f" and mimeType = '{escaped_mime}'"
         try:
-            response = (
-                self._drive()
-                .files()
-                .list(
-                    q=query,
-                    spaces="drive",
-                    pageSize=100,
-                    fields="files(id,name,mimeType,modifiedTime,driveId,parents)",
-                    includeItemsFromAllDrives=True,
-                    supportsAllDrives=True,
-                    orderBy="modifiedTime desc",
+            drive = self._drive()
+            parameters: dict[str, Any] = {
+                "q": query,
+                "spaces": "drive",
+                "pageSize": 100,
+                "fields": (
+                    "nextPageToken,"
+                    "files(id,name,mimeType,modifiedTime,driveId,parents)"
+                ),
+                "includeItemsFromAllDrives": True,
+                "supportsAllDrives": True,
+                "orderBy": "modifiedTime desc",
+            }
+            if source is not None:
+                drive_id = (
+                    source.definition.location_id
+                    if source.definition.location_type == "shared_drive"
+                    else self.get_resource(source.definition.location_id).drive_id
                 )
-                .execute()
-            )
-            return [self.get_resource(str(item["id"])) for item in response.get("files", [])]
+                if drive_id:
+                    parameters.update(corpora="drive", driveId=drive_id)
+                else:
+                    parameters["corpora"] = "user"
+
+            resources: list[WorkspaceResource] = []
+            while True:
+                response = drive.files().list(**parameters).execute()
+                resources.extend(
+                    self.get_resource(str(item["id"]))
+                    for item in response.get("files", [])
+                )
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    return resources
+                parameters["pageToken"] = page_token
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
 

@@ -1,6 +1,13 @@
 import pytest
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
+from app.auth.principals import (
+    CapabilityScope,
+    Principal,
+    ProviderScope,
+    bind_principal,
+    reset_principal,
+)
 from app.config.settings import Settings
 from app.policies.content_mutation import ContentMutationPolicy, MutationOperation
 from app.policies.source_access import SourceAccessPolicy
@@ -108,6 +115,51 @@ def test_missing_approval_reference_is_blocked():
         )
 
     assert captured.value.code == "mutation_approval_required"
+
+
+def test_developer_scope_authorizes_mutation_without_external_approval():
+    principal = Principal(
+        id="developer_test",
+        type="developer",
+        status="active",
+        providers=ProviderScope(workspace=True),
+        sources=frozenset({"safe_templates"}),
+        capabilities=CapabilityScope(create=True, update=True, move=True),
+    )
+    token = bind_principal(principal)
+    try:
+        allowed = policy().authorize(
+            source_id="safe_templates",
+            operation=MutationOperation.CREATE,
+            approval_reference="",
+        )
+    finally:
+        reset_principal(token)
+
+    assert allowed.definition.id == "safe_templates"
+
+
+def test_approval_reference_cannot_elevate_developer_capability():
+    principal = Principal(
+        id="developer_test",
+        type="developer",
+        status="active",
+        providers=ProviderScope(workspace=True),
+        sources=frozenset({"safe_templates"}),
+        capabilities=CapabilityScope(create=True),
+    )
+    token = bind_principal(principal)
+    try:
+        with pytest.raises(WorkspaceAdapterError) as captured:
+            policy(delete=True).authorize(
+                source_id="safe_templates",
+                operation=MutationOperation.DELETE,
+                approval_reference="decision-cannot-elevate",
+            )
+    finally:
+        reset_principal(token)
+
+    assert captured.value.code == "capability_denied"
 
 
 @pytest.mark.parametrize(

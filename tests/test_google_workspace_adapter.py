@@ -55,6 +55,71 @@ def test_adapter_builds_drive_client_with_delegated_credentials():
     )
 
 
+def test_find_resources_queries_and_paginates_selected_shared_drive_corpus():
+    first_request = Mock()
+    first_request.execute.return_value = {
+        "files": [{"id": "document_first_123"}],
+        "nextPageToken": "page-two",
+    }
+    second_request = Mock()
+    second_request.execute.return_value = {
+        "files": [{"id": "document_second_123"}],
+    }
+    files = Mock()
+    files.list.side_effect = [first_request, second_request]
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(),
+        credentials_factory=Mock(),
+        service_builder=Mock(return_value=drive),
+    )
+    adapter.get_resource = Mock(
+        side_effect=lambda resource_id: WorkspaceResource(
+            id=resource_id,
+            name="Manifest",
+            mime_type="application/vnd.google-apps.document",
+            modified_time="",
+            drive_id="shared_drive_12345",
+            ancestor_ids=("nested_folder_123",),
+            parent_ids=("nested_folder_123",),
+        )
+    )
+    shared_source = SourceDefinition.model_validate(
+        {
+            "id": "hq_client",
+            "name": "HQ Client",
+            "system": "google_workspace",
+            "location_type": "shared_drive",
+            "location_id": "shared_drive_12345",
+            "classification": "internal_delivery",
+            "owner": ["HQ"],
+            "status": "active",
+        }
+    )
+    registry = SourceRegistry(
+        SourceRegistryDocument(version=1, sources=(shared_source,))
+    )
+    allowed = SourceAccessPolicy(settings(), registry).authorize_source(shared_source)
+
+    result = adapter.find_resources(
+        name="Manifest",
+        mime_type="application/vnd.google-apps.document",
+        source=allowed,
+    )
+
+    assert [item.id for item in result] == [
+        "document_first_123",
+        "document_second_123",
+    ]
+    first_call = files.list.call_args_list[0].kwargs
+    second_call = files.list.call_args_list[1].kwargs
+    assert first_call["corpora"] == "drive"
+    assert first_call["driveId"] == "shared_drive_12345"
+    assert "name = 'Manifest'" in first_call["q"]
+    assert second_call["pageToken"] == "page-two"
+
+
 def test_list_files_returns_only_normalized_basic_metadata():
     request = Mock()
     request.execute.return_value = {

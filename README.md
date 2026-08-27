@@ -14,7 +14,7 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.22.0:
+Arquitectura v0.23.0:
 
 Agents
 ↓
@@ -281,13 +281,18 @@ ni modifica el Source Registry.
 ## Governed Source Operations
 
 `ContentMutationPolicy` es independiente de las políticas de lectura. Una
-mutación requiere simultáneamente:
+mutación de management requiere simultáneamente:
 
 - `source_id` presente en el Source Registry versionado;
 - fuente activa y no bloqueada;
 - capability exacta habilitada (`create`, `update`, `move`, `delete` o `share`);
 - `approval_reference` externa, con formato seguro;
 - pertenencia source-scoped del artefacto y, para move, del destino.
+
+Para un principal developer, la autoridad delegada es la intersección de su
+provider, fuente asignada, capability del principal y capability de la fuente;
+no requiere `approval_reference`. Una referencia recibida nunca amplía ese
+scope. Management conserva el requisito externo anterior.
 
 La presencia en `sources.yaml` representa la aprobación de la fuente. El
 Gateway no interpreta ni aprueba la referencia de decisión: solo exige su
@@ -338,7 +343,7 @@ Tools disponibles:
 - `list_source_proposals`: lista resúmenes seguros del registro durable;
 - `get_source_proposal`: devuelve el detalle seguro de una propuesta pendiente;
 - `create_source_artifact`: crea únicamente un Google Doc nativo en una fuente
-  con capability `create` y aprobación externa;
+  con capability `create` y la autorización correspondiente al principal;
 - `update_source_artifact`: anexa texto acotado a un Doc source-scoped con
   capability `update`;
 - `move_source_artifact`: mueve artefactos nativos u Office dentro de la misma
@@ -346,8 +351,9 @@ Tools disponibles:
 - `convert_source_artifact`: importa XLSX/XLSM como Google Sheet, DOCX como
   Google Doc y PPTX como Google Slides mediante conversión nativa de Drive;
   acepta `artifact_ref` y devuelve referencias opacas para encadenar el flujo;
-- `resolve_source_artifact`: resuelve nombre exacto o logical path dentro de una
-  fuente y devuelve un handle cifrado, autenticado y ligado a esa fuente;
+- `resolve_source_artifact`: consulta el estado actual del corpus Drive de la
+  fuente, resuelve recursivamente nombre exacto o logical path y devuelve un
+  handle cifrado, autenticado y ligado a esa fuente; no usa índice de artefactos;
 - `copy_source_artifact`: copia un Google Doc nativo sin modificar el original;
 - `rename_source_artifact`: renombra un artefacto source-scoped;
 - `inspect_document_structure`: devuelve revisión, tabs, índices, párrafos,
@@ -383,7 +389,8 @@ Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
 cada tool emite la misma auditoría estructurada de HTTP. Los errores de policy se
 propagan como tool errors legibles. Solo los tools con capability de mutación y
-`approval_reference` escriben en Google Workspace; ninguno modifica el Source Registry. Las tres
+autorización de management o scope developer escriben en Google Workspace;
+ninguno modifica el Source Registry. Las tres
 herramientas de proposals solo persisten o consultan intenciones pendientes.
 
 ## Office Artifact Awareness
@@ -397,8 +404,8 @@ usuarios.
 
 La extensión se deriva de un MIME type Office conocido, no del nombre del
 archivo. La inspección por sí misma no modifica nada. La conversión y el
-archivado existen como tools separados y solo se ejecutan con capability y una
-referencia de aprobación externa.
+archivado existen como tools separados y solo se ejecutan con capability y la
+autorización aplicable al tipo de principal.
 
 ## Artifact lifecycle
 
@@ -424,8 +431,9 @@ por lo que no existe otro secreto, base de datos ni estado de referencias.
 Rotar `BRUNOVA_GATEWAY_TOKEN` invalida referencias emitidas anteriormente.
 
 `copy_source_artifact`, `rename_source_artifact` y `edit_source_document`
-requieren aprobación externa y las capabilities `create` o `update` según la
-operación. Cada edición acepta entre 1 y 50 operaciones tipadas: insertar,
+requieren las capabilities `create` o `update` según la operación, además de
+aprobación externa para management o scope delegado para developer. Cada
+edición acepta entre 1 y 50 operaciones tipadas: insertar,
 eliminar o reemplazar texto; estilos de párrafo y texto; listas; tablas,
 filas/columnas/celdas y estilos básicos de celda; creación y edición indexada de
 headers/footers. El cliente nunca puede enviar requests arbitrarios de Google

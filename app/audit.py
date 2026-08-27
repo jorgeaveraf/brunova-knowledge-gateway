@@ -124,6 +124,8 @@ def emit_audit_record(
     provider: str | None = None,
     operation_classification: str | None = None,
     tool: str | None = None,
+    capability: str | None = None,
+    authorization_mode: str | None = None,
     duration_ms: int | None = None,
     principal_id: str | None = None,
     principal_type: str | None = None,
@@ -180,6 +182,10 @@ def emit_audit_record(
         event["operation_classification"] = operation_classification
     if tool:
         event["tool"] = tool
+    if capability:
+        event["capability"] = capability
+    if authorization_mode:
+        event["authorization_mode"] = authorization_mode
     if duration_ms is not None:
         event["duration_ms"] = duration_ms
     if principal_id:

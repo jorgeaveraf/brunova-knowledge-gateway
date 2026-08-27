@@ -212,11 +212,15 @@ def test_mutation_audit_contains_approval_but_not_change_content(monkeypatch):
         source_id="brunova_template",
         source_classification="management_only",
         approval_reference="decision-v013-test",
+        capability="update",
+        authorization_mode="external_approval",
     )
 
     event = json.loads(log_info.call_args.args[0])
     assert event["approval_reference"] == "decision-v013-test"
     assert event["source_id"] == "brunova_template"
+    assert event["capability"] == "update"
+    assert event["authorization_mode"] == "external_approval"
     assert "change" not in event
     assert "text" not in event
 
