@@ -29,6 +29,11 @@ from app.adapters.n8n.models import (
 )
 from app.adapters.n8n.runtime import get_n8n_client
 from app.audit import correlation_id, emit_audit_record
+from app.auth.principals import (
+    CapabilityScope,
+    active_principal,
+    authorize_workspace_operation,
+)
 from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
     ArtifactReference,
@@ -179,6 +184,17 @@ class BrunovaMCPServer(MCPServer):
 
     async def list_tools(self) -> list[MCPTool]:
         tools = await super().list_tools()
+        principal = active_principal()
+        effective_capabilities = _effective_developer_capabilities(principal)
+        tools = [
+            tool
+            for tool in tools
+            if _principal_can_see_tool(
+                principal, tool.name, effective_capabilities=effective_capabilities
+            )
+        ]
+        if principal.type != "management":
+            return tools
         try:
             downstream = await get_n8n_client().list_tools()
         except Exception:
@@ -202,6 +218,28 @@ class BrunovaMCPServer(MCPServer):
         arguments: dict[str, Any],
         context: Context | None = None,
     ) -> CallToolResult:
+        principal = active_principal()
+        authorization_error = _tool_authorization_error(principal, name)
+        if authorization_error:
+            denied_source_id = arguments.get("source_id")
+            if not isinstance(denied_source_id, str):
+                denied_source_id = None
+            emit_audit_record(
+                request_id=correlation_id(str(context.request_id) if context else None),
+                action="mcp_tool_call",
+                resource_id=None,
+                resource_type="mcp_tool",
+                result="rejected",
+                http_status=403,
+                error_code=authorization_error,
+                provider=_tool_provider(name),
+                source_id=denied_source_id,
+                tool=name,
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text="tool_denied: The requested operation is not authorized.")],
+                is_error=True,
+            )
         if not name.startswith("n8n_") or name in {"n8n_status", "n8n_list_tools"}:
             return await super().call_tool(name, arguments, context)
         client = get_n8n_client()
@@ -255,6 +293,99 @@ def _n8n_exposed_name(downstream_name: str, occupied: set[str]) -> str:
     return f"n8n_downstream_{downstream_name}" if preferred in occupied else preferred
 
 
+MANAGEMENT_ONLY_TOOLS = frozenset(
+    {
+        "get_operation_history",
+        "discover_source_candidates",
+        "get_source_candidate_details",
+        "create_source_proposal",
+        "list_source_proposals",
+        "get_source_proposal",
+    }
+)
+
+TOOL_CAPABILITIES: dict[str, str] = {
+    "list_sources": "read",
+    "resolve_source_artifact": "read",
+    "inspect_document_structure": "read",
+    "inspect_document_tab": "read",
+    "validate_document_structure": "read",
+    "list_source_documents": "read",
+    "inspect_source_artifacts": "read",
+    "retrieve_document": "read",
+    "retrieve_sheet_range": "read",
+    "copy_source_artifact": "create",
+    "create_source_artifact": "create",
+    "rename_source_artifact": "update",
+    "create_document_tab": "update",
+    "rename_document_tab": "update",
+    "delete_document_tab": "update",
+    "edit_source_document": "update",
+    "update_source_artifact": "update",
+    "move_source_artifact": "move",
+    "delete_source_artifact": "delete",
+    "share_source_artifact": "share",
+    "convert_source_artifact": "convert",
+}
+
+
+def _tool_provider(name: str) -> str:
+    if name.startswith("hubspot_"):
+        return "hubspot"
+    if name.startswith("n8n_"):
+        return "n8n"
+    return "workspace"
+
+
+def _effective_developer_capabilities(principal: Any) -> frozenset[str] | None:
+    if principal.type == "management":
+        return None
+    try:
+        sources = get_runtime_gateway().registry.sources
+    except Exception:
+        return frozenset()
+    return frozenset(
+        capability
+        for capability in CapabilityScope.model_fields
+        if principal.allows_capability(capability)
+        and any(
+            principal.allows_source(source.id)
+            and source.status.value == "active"
+            and bool(getattr(source.capabilities, capability, False))
+            for source in sources
+        )
+    )
+
+
+def _principal_can_see_tool(
+    principal: Any,
+    name: str,
+    *,
+    effective_capabilities: frozenset[str] | None = None,
+) -> bool:
+    if _tool_authorization_error(principal, name):
+        return False
+    capability = TOOL_CAPABILITIES.get(name)
+    return effective_capabilities is None or capability in effective_capabilities
+
+
+def _tool_authorization_error(principal: Any, name: str) -> str | None:
+    if principal.type == "management":
+        return None
+    if name in MANAGEMENT_ONLY_TOOLS:
+        return "tool_denied"
+    provider = _tool_provider(name)
+    if not principal.allows_provider(provider):
+        return "provider_denied"
+    capability = TOOL_CAPABILITIES.get(name)
+    # Developer-visible tools are allowlisted rather than inferred by prefix.
+    if capability is None:
+        return "tool_denied"
+    if not principal.allows_capability(capability):
+        return "capability_denied"
+    return None
+
+
 def _approval_reference(context: Context | None) -> str | None:
     if context is None:
         return None
@@ -270,14 +401,11 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.21.0",
+    version="0.22.0",
     instructions=(
-        "Read authorized Brunova knowledge, manage pending source proposals, and "
-        "execute full capability-gated Google Workspace CRUD operations with an "
-        "external "
-        "approval reference. Governed HubSpot Remote MCP read and approved mutation "
-        "tools are available without exposing HubSpot credentials. Safe operation history is available without direct "
-        "log access. No tool approves sources or mutates Source Registry."
+        "Use only the capabilities and sources exposed in this authenticated "
+        "principal's tool catalog. Mutations remain capability-gated and keep "
+        "their existing approval requirements."
     ),
 )
 
@@ -330,11 +458,32 @@ def _execute_tool(
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
+    capability = TOOL_CAPABILITIES.get(action)
     try:
         runtime = get_runtime_gateway()
+        principal = active_principal()
+        if principal.type == "developer" and capability is None:
+            raise WorkspaceAdapterError(
+                "tool_denied", "The requested operation is not authorized.", 403
+            )
         if source_id:
             source = registered_source(runtime.registry, source_id)
             source_classification = source.classification.value
+            if principal.type == "developer":
+                authorize_workspace_operation(
+                    principal, capability=capability or "read", source=source
+                )
+            if destination_source_id and principal.type == "developer":
+                destination_source = registered_source(
+                    runtime.registry, destination_source_id
+                )
+                authorize_workspace_operation(
+                    principal,
+                    capability=capability or "move",
+                    source=destination_source,
+                )
+        elif capability and principal.type == "developer":
+            authorize_workspace_operation(principal, capability=capability)
         result = operation(runtime, request_id)
         emit_audit_record(
             request_id=request_id,
@@ -355,6 +504,8 @@ def _execute_tool(
                 created_resource_id(result) if created_resource_id else None
             ),
             destination_source_id=destination_source_id,
+            provider="workspace" if capability else "gateway",
+            tool=action,
         )
         return result
     except WorkspaceAdapterError as error:
@@ -371,6 +522,8 @@ def _execute_tool(
             approval_reference=approval_reference,
             audience=audience,
             destination_source_id=destination_source_id,
+            provider="workspace" if capability else "gateway",
+            tool=action,
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
     except Exception:
@@ -387,6 +540,8 @@ def _execute_tool(
             approval_reference=approval_reference,
             audience=audience,
             destination_source_id=destination_source_id,
+            provider="workspace" if capability else "gateway",
+            tool=action,
         )
         raise
 
@@ -399,7 +554,16 @@ def list_sources(ctx: Context) -> SourceListToolResult:
         ctx=ctx,
         action="list_sources",
         operation=lambda runtime, request_id: SourceListToolResult(
-            sources=list_registered_sources(runtime.registry),
+            sources=[
+                source
+                for source in list_registered_sources(runtime.registry)
+                if active_principal().type == "management"
+                or (
+                    active_principal().allows_source(source.id)
+                    and source.status.value == "active"
+                    and source.capabilities.read
+                )
+            ],
             request_id=request_id,
         ),
         resource_type="source_registry",

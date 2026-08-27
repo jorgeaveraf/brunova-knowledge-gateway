@@ -75,3 +75,22 @@ sources:
       delete: false
       share: false
       convert: true
+  - id: hq_client
+    name: HQ
+    system: google_workspace
+    location_type: shared_drive
+    location_id: 0AABNBmvqPjhJUk9PVA
+    classification: internal_delivery
+    owner:
+      - Jorge
+      - Nat
+    status: active
+    source_type: knowledge_source
+    capabilities:
+      read: true
+      create: true
+      update: true
+      move: true
+      delete: true
+      share: false
+      convert: false

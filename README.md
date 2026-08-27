@@ -14,17 +14,17 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.21.0:
+Arquitectura v0.22.0:
 
 Agents
 ↓
 MCP Server / HTTP API
 ↓
-Gateway Authentication
+Gateway Authentication y Principal Resolution
 ↓
-Knowledge Gateway
+Scoped Authorization y MCP Tool Filtering
 ↓
-Source Registry y Policies
+Knowledge Gateway / Source Registry y Policies
 ↓
 Adapters
 ↓
@@ -555,6 +555,81 @@ gcloud run services update brunova-knowledge-gateway \
 La identidad de runtime debe tener `roles/secretmanager.secretAccessor` sobre
 ese secreto. La rotación se realiza agregando una nueva versión y desplegando
 una revisión nueva; el valor no pasa por Git ni por la imagen Docker.
+
+### Principals developers y acceso acotado
+
+El token legacy conserva exactamente el acceso gobernado de management. Un
+developer usa un token individual diferente, resuelto a un principal con:
+
+- estado `active` o `revoked` y expiración opcional;
+- providers explícitos (`workspace`, `hubspot`, `n8n`);
+- `source_id` asignados explícitamente;
+- capabilities `read`, `create`, `update`, `move`, `delete`, `share` y
+  `convert`.
+
+La autorización efectiva es siempre la intersección entre principal, source y
+requisito de la tool. La clasificación de una source nunca asigna acceso. En
+v1, las tools de discovery, propuestas, historial global y gobierno son solo
+management. `tools/list` se filtra por principal y `tools/call` vuelve a validar
+la misma política. Las referencias opacas continúan ligadas al `source_id`, y
+el source vuelve a validarse contra el principal antes de ejecutar el adapter.
+
+Los perfiles se leen en cada request desde un archivo JSON montado desde Secret
+Manager. El archivo contiene únicamente hashes SHA-256 de tokens generados con
+alta entropía; nunca tokens en texto plano. Su esquema es:
+
+```json
+{
+  "version": 1,
+  "principals": [
+    {
+      "id": "dev_example",
+      "type": "developer",
+      "status": "active",
+      "token_sha256": "<64 caracteres hexadecimales>",
+      "providers": {"workspace": true, "hubspot": false, "n8n": false},
+      "sources": ["<source_id exacto del registry>"],
+      "capabilities": {
+        "read": true, "create": true, "update": true, "move": true,
+        "delete": false, "share": false, "convert": false
+      },
+      "metadata": {"purpose": "delivery"}
+    }
+  ]
+}
+```
+
+Montar el secreto como archivo permite que una nueva versión `latest` se
+refleje sin rotar el token management ni reconstruir la imagen:
+
+```bash
+gcloud run services update brunova-knowledge-gateway \
+  --project=brunova-ai-platform \
+  --region=us-central1 \
+  --update-secrets=/secrets/principals/registry.json=brunova-principals:latest \
+  --update-env-vars=BRUNOVA_PRINCIPALS_FILE=/secrets/principals/registry.json
+```
+
+Para revocar una identidad, cambiar solo su `status` a `revoked` y agregar una
+nueva versión de `brunova-principals`. El middleware relee el archivo en cada
+request. Las respuestas de un token revocado o expirado usan el error externo
+seguro `invalid_authentication`; auditoría conserva la causa interna.
+
+El token individual debe generarse con un CSPRNG, guardarse en un secreto
+separado accesible al operador y al developer previsto, y convertirse a hash
+antes de crear el registro. No se imprime durante deploy ni se guarda en Git,
+logs, variables de imagen o respuestas del Gateway. El operador autorizado lo
+recupera directamente desde ese secreto y configura cualquier cliente MCP con:
+
+```text
+URL: https://<gateway-host>/mcp/
+Header: Authorization: Bearer <developer-token>
+```
+
+El cliente no necesita Obsidian ni recibe credenciales de Google, HubSpot o
+n8n. Los eventos de auditoría agregan `principal_id` y `principal_type` a cada
+operación, además de provider, source, tool, resultado y correlation ID cuando
+aplican; nunca incluyen el bearer token o el payload documental.
 
 ## HubSpot Remote MCP
 

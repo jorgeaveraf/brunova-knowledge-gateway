@@ -88,7 +88,17 @@ def emit_audit_event(
         provider=(
             "hubspot"
             if resource_type and resource_type.startswith("hubspot")
-            else None
+            else "workspace"
+            if resource_type
+            and (
+                resource_type.startswith("google_")
+                or resource_type.startswith("source_")
+            )
+            else "gateway"
+        ),
+        principal_id=getattr(getattr(request.state, "principal", None), "id", None),
+        principal_type=getattr(
+            getattr(request.state, "principal", None), "type", None
         ),
     )
 
@@ -115,6 +125,9 @@ def emit_audit_record(
     operation_classification: str | None = None,
     tool: str | None = None,
     duration_ms: int | None = None,
+    principal_id: str | None = None,
+    principal_type: str | None = None,
+    include_active_principal: bool = True,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -123,6 +136,13 @@ def emit_audit_record(
         "on",
     ):
         return
+    if include_active_principal and (principal_id is None or principal_type is None):
+        # Lazy import avoids coupling audit initialization to auth configuration.
+        from app.auth.principals import active_principal
+
+        principal = active_principal()
+        principal_id = principal_id or principal.id
+        principal_type = principal_type or principal.type
     service_account = os.getenv("WORKSPACE_SERVICE_ACCOUNT_EMAIL", "")
     event: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -162,6 +182,10 @@ def emit_audit_record(
         event["tool"] = tool
     if duration_ms is not None:
         event["duration_ms"] = duration_ms
+    if principal_id:
+        event["principal_id"] = principal_id
+    if principal_type:
+        event["principal_type"] = principal_type
     if error_code:
         event["error_code"] = error_code
     audit_logger.info(json.dumps(event, separators=(",", ":"), sort_keys=True))

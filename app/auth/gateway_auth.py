@@ -10,6 +10,8 @@ import hmac
 import os
 from dataclasses import dataclass
 
+from app.auth.principals import Principal, PrincipalResolver
+
 GATEWAY_TOKEN_ENVIRONMENT_VARIABLE = "BRUNOVA_GATEWAY_TOKEN"
 
 
@@ -43,3 +45,24 @@ class GatewayTokenAuthenticator:
         if not hmac.compare_digest(provided_token, self._expected_token):
             return "invalid_authentication"
         return None
+
+
+@dataclass(frozen=True, repr=False)
+class GatewayPrincipalAuthenticator:
+    """Resolve either the legacy management identity or one scoped developer."""
+
+    _resolver: PrincipalResolver
+
+    @classmethod
+    def from_environment(cls) -> "GatewayPrincipalAuthenticator":
+        try:
+            return cls(PrincipalResolver.from_environment())
+        except Exception as error:
+            raise GatewayAuthenticationConfigurationError(
+                "Gateway consumer authentication is not configured."
+            ) from error
+
+    def authenticate(
+        self, authorization: str | None
+    ) -> tuple[Principal | None, str | None]:
+        return self._resolver.resolve(authorization)
