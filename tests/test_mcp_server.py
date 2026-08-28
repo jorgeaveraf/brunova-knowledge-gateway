@@ -494,6 +494,8 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
             "hubspot_manage_crm_objects",
             "n8n_status",
             "n8n_list_tools",
+            "openwa_status",
+            "openwa_list_tools",
         }
     tab_tool_schemas = json.dumps(
         [

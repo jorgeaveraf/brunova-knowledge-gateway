@@ -570,7 +570,7 @@ El token legacy conserva exactamente el acceso gobernado de management. Un
 developer usa un token individual diferente, resuelto a un principal con:
 
 - estado `active` o `revoked` y expiración opcional;
-- providers explícitos (`workspace`, `hubspot`, `n8n`);
+- providers explícitos (`workspace`, `hubspot`, `n8n`, `openwa`);
 - `source_id` asignados explícitamente;
 - capabilities `read`, `create`, `update`, `move`, `delete`, `share` y
   `convert`.
@@ -595,7 +595,7 @@ alta entropía; nunca tokens en texto plano. Su esquema es:
       "type": "developer",
       "status": "active",
       "token_sha256": "<64 caracteres hexadecimales>",
-      "providers": {"workspace": true, "hubspot": false, "n8n": false},
+      "providers": {"workspace": true, "hubspot": false, "n8n": false, "openwa": false},
       "sources": ["<source_id exacto del registry>"],
       "capabilities": {
         "read": true, "create": true, "update": true, "move": true,
@@ -751,3 +751,42 @@ gcloud run services update brunova-knowledge-gateway \
 
 Las APIs de Drive, Docs, Sheets, IAM Service Account Credentials y Cloud Logging
 deben estar habilitadas en el proyecto de GCP.
+
+## OpenWA MCP
+
+El Gateway se conecta directamente al MCP curado de OpenWA mediante Streamable
+HTTP. `OPENWA_MCP_URL` contiene el endpoint completo (en producción,
+`https://wa.brunova.mx/mcp`); `OPENWA_APIKEY` se inyecta desde Secret Manager.
+`OPENWA_DISCOVERY_TTL_SECONDS` y `OPENWA_TIMEOUT_SECONDS` controlan discovery y
+timeouts sin acoplar el adapter a un host concreto.
+
+Cada tool descubierta se proyecta como `openwa_<downstream_tool_name>`. El
+catálogo conserva nombre, descripción, input schema, anotaciones MCP y metadata
+segura. `openwa_list_tools` fuerza discovery y `openwa_status` devuelve solo
+conectividad, inicialización, conteos read/write y versiones seguras. Una caída
+de OpenWA no afecta Workspace, HubSpot, n8n ni `/health`.
+
+Las anotaciones downstream son la clasificación autoritativa. Las tools con
+`readOnlyHint=true` se ejecutan como lecturas. Cualquier otra tool se trata como
+escritura y requiere una `approval_reference` externa válida en metadata MCP;
+esa referencia se audita, pero los argumentos, cuerpos de mensajes, media,
+respuestas completas, URL y credenciales no se registran. El Gateway no añade
+un proxy REST ni una segunda allowlist de operaciones OpenWA.
+
+Solo management recibe OpenWA en v4. Los principals developer mantienen
+`openwa: false` por defecto; `tools/list` no muestra ninguna tool OpenWA y
+`tools/call` revalida el provider antes de hacer discovery o una llamada
+downstream.
+
+Configuración productiva:
+
+```bash
+gcloud secrets create brunova-openwa-mcp-api-key \
+  --project=brunova-ai-platform --replication-policy=automatic
+gcloud secrets versions add brunova-openwa-mcp-api-key \
+  --project=brunova-ai-platform --data-file=-
+gcloud run services update brunova-knowledge-gateway \
+  --project=brunova-ai-platform --region=us-central1 \
+  --update-secrets=OPENWA_APIKEY=brunova-openwa-mcp-api-key:latest \
+  --update-env-vars=OPENWA_MCP_URL=https://wa.brunova.mx/mcp,OPENWA_DISCOVERY_TTL_SECONDS=60,OPENWA_TIMEOUT_SECONDS=30
+```

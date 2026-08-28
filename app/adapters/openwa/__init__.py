@@ -1,0 +1,1 @@
+"""OpenWA downstream MCP adapter."""

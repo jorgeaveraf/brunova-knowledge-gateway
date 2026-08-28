@@ -1,0 +1,102 @@
+import asyncio
+
+from mcp import Client
+
+import app.mcp_server as mcp_module
+from app.adapters.openwa.models import OpenWAToolDescriptor
+
+
+class FakeOpenWAClient:
+    def __init__(self):
+        self.calls = []
+
+    async def list_tools(self, **_kwargs):
+        return [
+            OpenWAToolDescriptor(
+                name="MessageHistory",
+                description="Read recent messages",
+                input_schema={"type": "object", "required": ["sessionId"]},
+                annotations={"readOnlyHint": True},
+                tier="read",
+            ),
+            OpenWAToolDescriptor(
+                name="MessageSendText",
+                description="Send text",
+                input_schema={"type": "object", "required": ["sessionId", "text"]},
+                annotations={"readOnlyHint": False},
+                tier="write",
+            ),
+        ]
+
+    async def call_tool(self, name, arguments):
+        self.calls.append((name, arguments))
+        return {"content": [{"type": "text", "text": "ok"}], "isError": False}
+
+
+class FakeN8NClient:
+    async def list_tools(self, **_kwargs):
+        from app.adapters.n8n.models import N8NToolDescriptor
+
+        return [N8NToolDescriptor(name="healthy", input_schema={"type": "object"})]
+
+
+def test_management_projects_catalog_and_governs_write_without_auditing_body(monkeypatch):
+    fake = FakeOpenWAClient()
+    audits = []
+    monkeypatch.setattr(mcp_module, "get_openwa_client", lambda: fake)
+    monkeypatch.setattr(mcp_module, "emit_audit_record", lambda **kwargs: audits.append(kwargs))
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            catalog = await client.list_tools()
+            read = await client.call_tool(
+                "openwa_MessageHistory", {"sessionId": "safe-session"}
+            )
+            denied = await client.call_tool(
+                "openwa_MessageSendText",
+                {"sessionId": "safe-session", "text": "private-message-body"},
+            )
+            written = await client.call_tool(
+                "openwa_MessageSendText",
+                {"sessionId": "safe-session", "text": "private-message-body"},
+                meta={"approval_reference": "approved-test-001"},
+            )
+            return catalog, read, denied, written
+
+    catalog, read, denied, written = asyncio.run(scenario())
+    projected = {tool.name: tool for tool in catalog.tools if tool.name.startswith("openwa_")}
+
+    assert projected["openwa_MessageHistory"].input_schema["required"] == ["sessionId"]
+    assert projected["openwa_MessageSendText"].meta["approval_reference_required"] is True
+    assert read.is_error is False
+    assert denied.is_error is True
+    assert "openwa_approval_required" in denied.content[0].text
+    assert written.is_error is False
+    assert [call[0] for call in fake.calls] == ["MessageHistory", "MessageSendText"]
+    assert all("private-message-body" not in repr(event) for event in audits)
+    assert audits[-1]["provider"] == "openwa"
+    assert audits[-1]["approval_reference"] == "approved-test-001"
+
+
+def test_provider_discovery_failures_are_isolated(monkeypatch):
+    fake_openwa = FakeOpenWAClient()
+
+    class Failed:
+        async def list_tools(self, **_kwargs):
+            raise RuntimeError("unavailable")
+
+    async def names():
+        async with Client(mcp_module.mcp_server) as client:
+            return {tool.name for tool in (await client.list_tools()).tools}
+
+    monkeypatch.setattr(mcp_module, "get_n8n_client", lambda: Failed())
+    monkeypatch.setattr(mcp_module, "get_openwa_client", lambda: fake_openwa)
+    with_openwa = asyncio.run(names())
+    assert "openwa_MessageHistory" in with_openwa
+    assert "list_sources" in with_openwa
+
+    monkeypatch.setattr(mcp_module, "get_n8n_client", lambda: FakeN8NClient())
+    monkeypatch.setattr(mcp_module, "get_openwa_client", lambda: Failed())
+    with_n8n = asyncio.run(names())
+    assert "n8n_healthy" in with_n8n
+    assert "list_sources" in with_n8n

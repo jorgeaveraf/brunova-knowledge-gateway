@@ -129,13 +129,14 @@ def test_developer_mcp_catalog_is_workspace_only_and_capability_filtered(monkeyp
             async with Client(mcp_module.mcp_server) as client:
                 tools = await client.list_tools()
                 denied = await client.call_tool("hubspot_get_user_details", {})
-                return {tool.name for tool in tools.tools}, denied
+                openwa_denied = await client.call_tool("openwa_MessageHistory", {})
+                return {tool.name for tool in tools.tools}, denied, openwa_denied
         finally:
             reset_principal(context_token)
 
     import asyncio
 
-    names, denied = asyncio.run(scenario())
+    names, denied, openwa_denied = asyncio.run(scenario())
     assert "retrieve_document" in names
     assert "create_source_artifact" in names
     assert "delete_source_artifact" not in names
@@ -143,9 +144,12 @@ def test_developer_mcp_catalog_is_workspace_only_and_capability_filtered(monkeyp
     assert "convert_source_artifact" not in names
     assert not any(name.startswith("hubspot_") for name in names)
     assert not any(name.startswith("n8n_") for name in names)
+    assert not any(name.startswith("openwa_") for name in names)
     assert "discover_source_candidates" not in names
     assert denied.is_error is True
     assert "tool_denied" in denied.content[0].text
+    assert openwa_denied.is_error is True
+    assert "tool_denied" in openwa_denied.content[0].text
 
 
 def test_principal_registry_can_reload_from_secret_manager_mounted_file(

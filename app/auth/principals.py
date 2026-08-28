@@ -27,6 +27,7 @@ class ProviderScope(BaseModel):
     workspace: bool = False
     hubspot: bool = False
     n8n: bool = False
+    openwa: bool = False
 
 
 class CapabilityScope(BaseModel):
@@ -98,7 +99,9 @@ class Principal:
             id="management",
             type="management",
             status="active",
-            providers=ProviderScope(workspace=True, hubspot=True, n8n=True),
+            providers=ProviderScope(
+                workspace=True, hubspot=True, n8n=True, openwa=True
+            ),
             sources=None,
             capabilities=CapabilityScope(
                 read=True,

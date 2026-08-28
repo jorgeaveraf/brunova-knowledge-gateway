@@ -28,6 +28,8 @@ from app.adapters.n8n.models import (
     N8NToolListResult,
 )
 from app.adapters.n8n.runtime import get_n8n_client
+from app.adapters.openwa.models import OpenWAStatusResult, OpenWAToolListResult
+from app.adapters.openwa.runtime import get_openwa_client
 from app.audit import correlation_id, emit_audit_record
 from app.auth.principals import (
     CapabilityScope,
@@ -180,7 +182,7 @@ class HubSpotToolListResult(BaseModel):
 
 
 class BrunovaMCPServer(MCPServer):
-    """MCP server that projects the live n8n catalog without a second policy."""
+    """MCP server that projects provider-curated live downstream catalogs."""
 
     async def list_tools(self) -> list[MCPTool]:
         tools = await super().list_tools()
@@ -193,23 +195,42 @@ class BrunovaMCPServer(MCPServer):
                 principal, tool.name, effective_capabilities=effective_capabilities
             )
         ]
-        if principal.type != "management":
-            return tools
-        try:
-            downstream = await get_n8n_client().list_tools()
-        except Exception:
-            # Provider isolation: n8n outages never hide native/Workspace/HubSpot tools.
-            return tools
         occupied = {tool.name for tool in tools}
-        for descriptor in downstream:
-            exposed_name = _n8n_exposed_name(descriptor.name, occupied)
-            occupied.add(exposed_name)
-            tools.append(MCPTool(
-                name=exposed_name,
-                description=descriptor.description,
-                input_schema=descriptor.input_schema,
-                _meta={**descriptor.metadata, "provider": "n8n", "downstream_tool": descriptor.name},
-            ))
+        if principal.type == "management":
+            try:
+                downstream = await get_n8n_client().list_tools()
+            except Exception:
+                # Provider isolation: one outage never hides another provider.
+                downstream = []
+            for descriptor in downstream:
+                exposed_name = _downstream_exposed_name("n8n", descriptor.name, occupied)
+                occupied.add(exposed_name)
+                tools.append(MCPTool(
+                    name=exposed_name,
+                    description=descriptor.description,
+                    input_schema=descriptor.input_schema,
+                    _meta={**descriptor.metadata, "provider": "n8n", "downstream_tool": descriptor.name},
+                ))
+            try:
+                openwa_tools = await get_openwa_client().list_tools()
+            except Exception:
+                openwa_tools = []
+            for descriptor in openwa_tools:
+                exposed_name = _downstream_exposed_name("openwa", descriptor.name, occupied)
+                occupied.add(exposed_name)
+                tools.append(MCPTool(
+                    name=exposed_name,
+                    description=descriptor.description,
+                    input_schema=descriptor.input_schema,
+                    annotations=descriptor.annotations or None,
+                    _meta={
+                        **descriptor.metadata,
+                        "provider": "openwa",
+                        "downstream_tool": descriptor.name,
+                        "tier": descriptor.tier,
+                        "approval_reference_required": descriptor.tier == "write",
+                    },
+                ))
         return tools
 
     async def call_tool(
@@ -240,14 +261,18 @@ class BrunovaMCPServer(MCPServer):
                 content=[TextContent(type="text", text="tool_denied: The requested operation is not authorized.")],
                 is_error=True,
             )
-        if not name.startswith("n8n_") or name in {"n8n_status", "n8n_list_tools"}:
+        is_n8n = name.startswith("n8n_") and name not in {"n8n_status", "n8n_list_tools"}
+        is_openwa = name.startswith("openwa_") and name not in {"openwa_status", "openwa_list_tools"}
+        if not is_n8n and not is_openwa:
             return await super().call_tool(name, arguments, context)
+        if is_openwa:
+            return await self._call_openwa_tool(name, arguments, context)
         client = get_n8n_client()
         tools = await client.list_tools()
         occupied = {"n8n_status", "n8n_list_tools"}
         mapping: dict[str, str] = {}
         for descriptor in tools:
-            exposed = _n8n_exposed_name(descriptor.name, occupied)
+            exposed = _downstream_exposed_name("n8n", descriptor.name, occupied)
             occupied.add(exposed)
             mapping[exposed] = descriptor.name
         downstream_name = mapping.get(name)
@@ -287,10 +312,82 @@ class BrunovaMCPServer(MCPServer):
                 is_error=True,
             )
 
+    async def _call_openwa_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: Context | None,
+    ) -> CallToolResult:
+        request_id = correlation_id(str(context.request_id) if context else None)
+        approval_reference = _approval_reference(context)
+        started = time.monotonic()
+        try:
+            client = get_openwa_client()
+            tools = await client.list_tools()
+            occupied = {"openwa_status", "openwa_list_tools"}
+            mapping: dict[str, Any] = {}
+            for descriptor in tools:
+                exposed = _downstream_exposed_name("openwa", descriptor.name, occupied)
+                occupied.add(exposed)
+                mapping[exposed] = descriptor
+            descriptor = mapping.get(name)
+            if descriptor is None:
+                raise WorkspaceAdapterError(
+                    "openwa_tool_unavailable",
+                    "The OpenWA tool is not currently exposed.",
+                    404,
+                )
+            if descriptor.tier == "write":
+                approval_reference = ContentMutationPolicy.normalized_approval_reference(
+                    approval_reference or ""
+                )
+                if approval_reference is None:
+                    raise WorkspaceAdapterError(
+                        "openwa_approval_required",
+                        "A valid external approval reference is required for OpenWA writes.",
+                        403,
+                    )
+            result = await client.call_tool(descriptor.name, arguments)
+            downstream_failed = bool(result.get("isError", False)) if isinstance(result, dict) else False
+            emit_audit_record(
+                request_id=request_id,
+                action="openwa_tool_call",
+                resource_id=None,
+                resource_type="openwa_mcp_tool",
+                result="error" if downstream_failed else "success",
+                http_status=502 if downstream_failed else 200,
+                provider="openwa",
+                tool=descriptor.name,
+                operation_classification=descriptor.tier,
+                approval_reference=approval_reference,
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return CallToolResult.model_validate(result)
+        except WorkspaceAdapterError as error:
+            emit_audit_record(
+                request_id=request_id,
+                action="openwa_tool_call",
+                resource_id=None,
+                resource_type="openwa_mcp_tool",
+                result="rejected" if error.status_code < 500 else "error",
+                http_status=error.status_code,
+                error_code=error.code,
+                provider="openwa",
+                tool=name.removeprefix("openwa_"),
+                approval_reference=approval_reference,
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"{error.code}: {error.message}")],
+                is_error=True,
+            )
 
-def _n8n_exposed_name(downstream_name: str, occupied: set[str]) -> str:
-    preferred = f"n8n_{downstream_name}"
-    return f"n8n_downstream_{downstream_name}" if preferred in occupied else preferred
+
+def _downstream_exposed_name(
+    provider: str, downstream_name: str, occupied: set[str]
+) -> str:
+    preferred = f"{provider}_{downstream_name}"
+    return f"{provider}_downstream_{downstream_name}" if preferred in occupied else preferred
 
 
 MANAGEMENT_ONLY_TOOLS = frozenset(
@@ -334,6 +431,8 @@ def _tool_provider(name: str) -> str:
         return "hubspot"
     if name.startswith("n8n_"):
         return "n8n"
+    if name.startswith("openwa_"):
+        return "openwa"
     return "workspace"
 
 
@@ -401,7 +500,7 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.23.0",
+    version="0.24.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
@@ -1663,6 +1762,77 @@ async def n8n_list_tools(ctx: Context) -> N8NToolListResult:
             duration_ms=round((time.monotonic() - started) * 1000),
         )
         raise RuntimeError(f"{code}: n8n MCP catalog is unavailable") from error
+
+
+@mcp_server.tool()
+async def openwa_status(ctx: Context) -> OpenWAStatusResult:
+    """Return safe OpenWA MCP connectivity, mode, and catalog status."""
+
+    request_id = _mcp_request_id(ctx)
+    started = time.monotonic()
+    try:
+        status = await get_openwa_client().status()
+    except ValueError:
+        result = OpenWAStatusResult(
+            configured=False,
+            connected=False,
+            mcp_initialized=False,
+            tool_count=0,
+            request_id=request_id,
+        )
+    else:
+        result = OpenWAStatusResult(**status.model_dump(), request_id=request_id)
+    emit_audit_record(
+        request_id=request_id,
+        action="openwa_status",
+        resource_id=None,
+        resource_type="openwa_mcp_status",
+        result="success" if result.connected else "error",
+        http_status=200 if result.connected else 503,
+        provider="openwa",
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
+@mcp_server.tool()
+async def openwa_list_tools(ctx: Context) -> OpenWAToolListResult:
+    """List the current OpenWA-curated MCP catalog from live discovery."""
+
+    request_id = _mcp_request_id(ctx)
+    started = time.monotonic()
+    try:
+        tools = await get_openwa_client().list_tools(force_refresh=True)
+        emit_audit_record(
+            request_id=request_id,
+            action="openwa_list_tools",
+            resource_id=None,
+            resource_type="openwa_mcp_tool_catalog",
+            result="success",
+            http_status=200,
+            provider="openwa",
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        return OpenWAToolListResult(tools=tools, request_id=request_id)
+    except (ValueError, WorkspaceAdapterError) as error:
+        code = (
+            error.code
+            if isinstance(error, WorkspaceAdapterError)
+            else "openwa_not_configured"
+        )
+        status = error.status_code if isinstance(error, WorkspaceAdapterError) else 503
+        emit_audit_record(
+            request_id=request_id,
+            action="openwa_list_tools",
+            resource_id=None,
+            resource_type="openwa_mcp_tool_catalog",
+            result="error",
+            http_status=status,
+            error_code=code,
+            provider="openwa",
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
+        raise RuntimeError(f"{code}: OpenWA MCP catalog is unavailable") from error
 
 
 @mcp_server.tool()
