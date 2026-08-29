@@ -519,8 +519,10 @@ Authorization: Bearer <token administrado fuera del repositorio>
 ```
 
 Solo `/health`, `/docs`, `/redoc`, `/openapi.json` y el callback exacto
-`/auth/hubspot/callback` permanecen públicos. Esta lista es explícita: cualquier
-endpoint futuro queda protegido automáticamente.
+`/auth/hubspot/callback` permanecen públicos. `POST /events/agent-signals` está
+exento del bearer token del Gateway, pero aplica su propia autenticación OIDC de
+Pub/Sub. Esta lista es explícita: cualquier endpoint futuro queda protegido
+automáticamente.
 El middleware autentica al consumidor antes de ejecutar handlers, policies,
 adapters o tools MCP. La comparación del token es constante y el valor nunca se
 registra en auditoría.
@@ -790,3 +792,76 @@ gcloud run services update brunova-knowledge-gateway \
   --update-secrets=OPENWA_APIKEY=brunova-openwa-mcp-api-key:latest \
   --update-env-vars=OPENWA_MCP_URL=https://wa.brunova.mx/mcp,OPENWA_DISCOVERY_TTL_SECONDS=60,OPENWA_TIMEOUT_SECONDS=30
 ```
+
+## Agent Signal Inbox v1
+
+`POST /events/agent-signals` es el consumer exclusivo del envelope push real de
+Pub/Sub. Valida el ID token de Google contra `AGENT_SIGNAL_PUSH_AUDIENCE`, exige
+issuer Google, `email_verified=true` y coincidencia exacta con
+`AGENT_SIGNAL_PUSH_SERVICE_ACCOUNT`. No acepta `BRUNOVA_GATEWAY_TOKEN` como
+autenticación alternativa.
+
+Cada `signal_id` se guarda como un JSON independiente bajo
+`gs://$AGENT_SIGNAL_BUCKET/$AGENT_SIGNAL_PREFIX<signal_id>.json`. La creación usa
+`if_generation_match=0`, por lo que una redelivery conserva un solo item. Cada
+cambio de estado usa la generación leída como precondición optimista. Los
+estados y transiciones permitidas son:
+
+```text
+pending -> claimed -> completed
+   |          |  \
+   |          |   -> pending (release)
+   |          -> dismissed
+   -> dismissed
+```
+
+Una claim dura 30 minutos por defecto; al leer, listar o reclamar, una claim
+expirada vuelve a `pending`. `completed` y `dismissed` se eliminan después de 30
+días mediante cleanup lazy durante list/status. `pending` y `claimed` se
+conservan. Ambos periodos son configurables sin crear scheduler o lock service.
+
+El contrato común admite `signal_id`, `signal_type`, `priority`, `occurred_at`,
+`source`, `reason`, `references` y `metadata`. La extensión allowlisted de
+`whatsapp_attention_required` valida `contact`, `conversation` y un `preview`
+máximo de 500 caracteres. El Gateway no recupera conversaciones, media ni CRM,
+y recibir una señal no ejecuta ninguna tool downstream.
+
+Las tools `list_agent_signals`, `get_agent_signal`, `claim_agent_signal`,
+`complete_agent_signal`, `dismiss_agent_signal`, `release_agent_signal` y
+`agent_signal_status` son exclusivamente management. El historial seguro se
+consulta aparte mediante `get_agent_signal_operation_history`, sin mezclarlo con
+el historial source-scoped de Workspace. Estas tools no aparecen en
+`tools/list` de developer y una invocación directa vuelve a fallar cerrada. Los
+eventos de auditoría contienen provider, operación, principal, `signal_id`,
+`signal_type`, transición, resultado y correlation ID; nunca preview, teléfono,
+chat ni body completo.
+
+Los payloads permanentemente inválidos se auditan sin contenido y reciben 204
+para evitar retry infinito. Un fallo de persistencia recibe 5xx, de modo que
+Pub/Sub redelivere. Una DLQ puede agregarse en un incremento posterior.
+
+Configuración no secreta esperada:
+
+```bash
+AGENT_SIGNAL_BUCKET=brunova-ai-platform-36958632716-knowledge-gateway-state
+AGENT_SIGNAL_PREFIX=agent-signals/items/
+AGENT_SIGNAL_CLAIM_LEASE_SECONDS=1800
+AGENT_SIGNAL_COMPLETED_RETENTION_DAYS=30
+AGENT_SIGNAL_PUSH_AUDIENCE=https://<gateway-host>/events/agent-signals
+AGENT_SIGNAL_PUSH_SERVICE_ACCOUNT=brunova-signal-push@brunova-ai-platform.iam.gserviceaccount.com
+```
+
+La configuración gobernada de la subscription existente (sin crear una
+segunda) es conceptualmente:
+
+```bash
+gcloud pubsub subscriptions update brunova-management-agent-signals \
+  --project=brunova-ai-platform \
+  --push-endpoint="https://<gateway-host>/events/agent-signals" \
+  --push-auth-service-account="brunova-signal-push@brunova-ai-platform.iam.gserviceaccount.com" \
+  --push-auth-token-audience="https://<gateway-host>/events/agent-signals"
+```
+
+Antes de ejecutar ese cambio se debe comprobar backlog, retry, ack deadline,
+retención e IAM live. El Inbox no implementa wake-up, daemon local,
+notificaciones desktop ni polling de Codex.

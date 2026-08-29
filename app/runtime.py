@@ -21,6 +21,7 @@ from app.source_proposal_store import (
 )
 from app.source_registry import SourceRegistry
 from app.operation_history import OperationHistoryStore
+from app.agent_signals import AgentSignalInbox, CloudStorageAgentSignalBackend
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,25 @@ class KnowledgeRuntime:
     mutation_policy: ContentMutationPolicy
     operation_history_store: OperationHistoryStore | None = None
     artifact_reference_codec: ArtifactReferenceCodec | None = None
+    agent_signal_inbox: AgentSignalInbox | None = None
+
+
+def _build_agent_signal_inbox(settings: Settings) -> AgentSignalInbox | None:
+    """Keep optional Inbox configuration isolated from every other provider."""
+
+    if not settings.agent_signal_bucket:
+        return None
+    try:
+        return AgentSignalInbox(
+            CloudStorageAgentSignalBackend(
+                bucket_name=settings.agent_signal_bucket,
+                prefix=settings.agent_signal_prefix,
+            ),
+            claim_lease_seconds=settings.agent_signal_claim_lease_seconds,
+            completed_retention_days=settings.agent_signal_completed_retention_days,
+        )
+    except Exception:
+        return None
 
 
 @lru_cache
@@ -66,6 +86,7 @@ def get_runtime_gateway() -> KnowledgeRuntime:
             mutation_policy=ContentMutationPolicy(registry, source_policy),
             artifact_reference_codec=ArtifactReferenceCodec.from_environment(),
             operation_history_store=CloudLoggingOperationHistoryStore(),
+            agent_signal_inbox=_build_agent_signal_inbox(settings),
         )
     except ValueError as error:
         raise WorkspaceAdapterError(

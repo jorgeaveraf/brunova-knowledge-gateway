@@ -5,9 +5,14 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from app.audit import correlation_id, emit_audit_event, request_audit_context
+from app.audit import (
+    correlation_id,
+    emit_audit_event,
+    emit_audit_record,
+    request_audit_context,
+)
 from app.adapters.google_workspace.docs import GoogleDocsAdapter
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
@@ -41,6 +46,9 @@ from app.source_discovery.interface import (
     SourceDiscovery,
 )
 from app.source_registry import SourceRegistry, SourceRegistryMetadata
+from app.auth.pubsub_push import parse_pubsub_signal, verify_pubsub_oidc
+from app.agent_signals import AgentSignalInbox
+from app.runtime import get_runtime_gateway
 
 
 @asynccontextmanager
@@ -51,7 +59,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Brunova Knowledge Gateway",
-    version="0.24.0",
+    version="0.25.0",
     lifespan=lifespan,
 )
 app.add_middleware(GatewayAuthenticationMiddleware)
@@ -248,8 +256,117 @@ def capabilities():
             "gateway_authentication",
             "hubspot_governed_mcp",
             "n8n_full_access_mcp",
+            "agent_signal_inbox",
         ]
     }
+
+
+def get_agent_signal_inbox() -> AgentSignalInbox:
+    inbox = get_runtime_gateway().agent_signal_inbox
+    if inbox is None:
+        raise WorkspaceAdapterError(
+            "agent_signal_inbox_unavailable",
+            "Agent Signal Inbox is not configured.",
+            503,
+        )
+    return inbox
+
+
+@app.post("/events/agent-signals", status_code=204)
+async def receive_agent_signal(request: Request) -> Response:
+    """Receive only authenticated Pub/Sub push deliveries and durably ack them."""
+
+    request_id = request.state.request_id
+    try:
+        verify_pubsub_oidc(request.headers.get("Authorization"))
+    except WorkspaceAdapterError as error:
+        emit_audit_record(
+            request_id=request_id,
+            action="agent_signal_received",
+            resource_id=None,
+            resource_type="agent_signal",
+            result="rejected" if error.status_code < 500 else "error",
+            http_status=error.status_code,
+            error_code=error.code,
+            provider="agent_signals",
+            principal_id="pubsub_push",
+            principal_type="service",
+            include_active_principal=False,
+        )
+        raise
+    try:
+        delivery = await parse_pubsub_signal(request)
+    except WorkspaceAdapterError as error:
+        # Permanent payload failures are acknowledged to stop infinite retries.
+        # The safe audit record intentionally contains no payload fields.
+        emit_audit_record(
+            request_id=request_id,
+            action="agent_signal_received",
+            resource_id=None,
+            resource_type="agent_signal",
+            result="rejected",
+            http_status=204,
+            error_code=error.code,
+            provider="agent_signals",
+            principal_id="pubsub_push",
+            principal_type="service",
+            include_active_principal=False,
+        )
+        return Response(status_code=204)
+    try:
+        result = get_agent_signal_inbox().receive(
+            delivery.payload,
+            message_id=delivery.message_id,
+            publish_time=delivery.publish_time,
+            attributes=delivery.attributes,
+        )
+    except Exception as error:
+        code = (
+            error.code
+            if isinstance(error, WorkspaceAdapterError)
+            else "agent_signal_persistence_failed"
+        )
+        status = (
+            error.status_code if isinstance(error, WorkspaceAdapterError) else 503
+        )
+        emit_audit_record(
+            request_id=request_id,
+            action="agent_signal_received",
+            resource_id=delivery.payload.signal_id,
+            resource_type="agent_signal",
+            result="error",
+            http_status=status,
+            error_code=code,
+            provider="agent_signals",
+            signal_id=delivery.payload.signal_id,
+            signal_type=delivery.payload.signal_type,
+            principal_id="pubsub_push",
+            principal_type="service",
+            include_active_principal=False,
+        )
+        if isinstance(error, WorkspaceAdapterError):
+            raise
+        raise WorkspaceAdapterError(
+            "agent_signal_persistence_failed",
+            "Agent Signal could not be persisted.",
+            503,
+        ) from error
+    emit_audit_record(
+        request_id=request_id,
+        action="agent_signal_received",
+        resource_id=result.signal_id,
+        resource_type="agent_signal",
+        result="success",
+        http_status=204,
+        provider="agent_signals",
+        signal_id=result.signal_id,
+        signal_type=result.signal_type,
+        status_transition="received->pending" if result.created else "deduplicated",
+        principal_id="pubsub_push",
+        principal_type="service",
+        include_active_principal=False,
+    )
+    return Response(status_code=204)
 
 
 @app.get("/auth/hubspot/connect")

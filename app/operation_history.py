@@ -30,6 +30,14 @@ class GovernedOperation(str, Enum):
     DELETE_DOCUMENT_TAB = "delete_document_tab"
 
 
+class AgentSignalOperation(str, Enum):
+    RECEIVED = "agent_signal_received"
+    CLAIMED = "agent_signal_claimed"
+    COMPLETED = "agent_signal_completed"
+    DISMISSED = "agent_signal_dismissed"
+    RELEASED = "agent_signal_released"
+
+
 class OperationResult(str, Enum):
     SUCCESS = "success"
     REJECTED = "rejected"
@@ -50,6 +58,21 @@ class OperationHistoryEntry(BaseModel):
     correlation_id: str
 
 
+class AgentSignalOperationHistoryEntry(BaseModel):
+    """Content-free lifecycle audit metadata for management consumers."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    timestamp: str
+    operation: AgentSignalOperation
+    signal_id: str
+    signal_type: str | None = None
+    status_transition: str | None = None
+    result: OperationResult
+    request_id: str
+    correlation_id: str
+
+
 class OperationHistoryStore(Protocol):
     def list(
         self,
@@ -58,6 +81,14 @@ class OperationHistoryStore(Protocol):
         operation: GovernedOperation | None,
         limit: int,
     ) -> list[OperationHistoryEntry]: ...
+
+    def list_agent_signals(
+        self,
+        *,
+        signal_id: str | None,
+        operation: AgentSignalOperation | None,
+        limit: int,
+    ) -> list[AgentSignalOperationHistoryEntry]: ...
 
 
 def list_authorized_operation_history(

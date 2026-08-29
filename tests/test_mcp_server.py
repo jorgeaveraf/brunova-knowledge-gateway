@@ -496,6 +496,14 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
             "n8n_list_tools",
             "openwa_status",
             "openwa_list_tools",
+            "list_agent_signals",
+            "get_agent_signal",
+            "claim_agent_signal",
+            "complete_agent_signal",
+            "dismiss_agent_signal",
+            "release_agent_signal",
+            "agent_signal_status",
+            "get_agent_signal_operation_history",
         }
     tab_tool_schemas = json.dumps(
         [

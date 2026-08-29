@@ -6,6 +6,7 @@ from app.adapters.google_cloud_logging import CloudLoggingOperationHistoryStore
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.config.settings import Settings
 from app.operation_history import (
+    AgentSignalOperation,
     GovernedOperation,
     OperationHistoryEntry,
     list_authorized_operation_history,
@@ -196,3 +197,57 @@ def test_history_filter_includes_governed_document_tab_mutations():
         "delete_document_tab",
     ):
         assert f'jsonPayload.action="{operation}"' in query
+
+
+def test_agent_signal_history_is_content_free_and_provider_scoped():
+    response = {
+        "entries": [
+            {
+                "timestamp": "2026-08-29T12:00:00Z",
+                "jsonPayload": {
+                    "service": "brunova-knowledge-gateway",
+                    "provider": "agent_signals",
+                    "action": "agent_signal_claimed",
+                    "signal_id": "signal-123",
+                    "signal_type": "whatsapp_attention_required",
+                    "status_transition": "pending->claimed",
+                    "result": "success",
+                    "request_id": "request-123",
+                    "correlation_id": "correlation-123",
+                    "preview": "must-not-escape",
+                    "phone": "+520000000000",
+                    "content": "must-not-escape",
+                },
+            }
+        ]
+    }
+    execute = Mock(return_value=response)
+    list_call = Mock(return_value=Mock(execute=execute))
+    service = Mock()
+    service.entries.return_value.list = list_call
+    store = CloudLoggingOperationHistoryStore(
+        service=service, project_id="brunova-ai-platform"
+    )
+
+    result = store.list_agent_signals(
+        signal_id="signal-123",
+        operation=AgentSignalOperation.CLAIMED,
+        limit=10,
+    )
+
+    assert result[0].model_dump(mode="json") == {
+        "timestamp": "2026-08-29T12:00:00Z",
+        "operation": "agent_signal_claimed",
+        "signal_id": "signal-123",
+        "signal_type": "whatsapp_attention_required",
+        "status_transition": "pending->claimed",
+        "result": "success",
+        "request_id": "request-123",
+        "correlation_id": "correlation-123",
+    }
+    serialized = result[0].model_dump_json()
+    assert "must-not-escape" not in serialized
+    assert "+520000000000" not in serialized
+    query = list_call.call_args.kwargs["body"]["filter"]
+    assert 'jsonPayload.provider="agent_signals"' in query
+    assert 'jsonPayload.signal_id="signal-123"' in query

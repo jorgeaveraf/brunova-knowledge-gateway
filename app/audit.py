@@ -33,6 +33,10 @@ def correlation_id(incoming: str | None) -> str:
 
 def request_audit_context(request: Request) -> tuple[str | None, str | None, str | None]:
     path = request.url.path
+    # Agent Signal receipt emits a purpose-built record inside the endpoint so
+    # invalid payloads can be acknowledged without being mislabeled successful.
+    if path == "/events/agent-signals":
+        return None, None, None
     if path == "/auth/hubspot/connect":
         return "hubspot_oauth_connect", None, "hubspot_connection"
     if path == "/auth/hubspot/callback":
@@ -127,6 +131,9 @@ def emit_audit_record(
     capability: str | None = None,
     authorization_mode: str | None = None,
     duration_ms: int | None = None,
+    signal_id: str | None = None,
+    signal_type: str | None = None,
+    status_transition: str | None = None,
     principal_id: str | None = None,
     principal_type: str | None = None,
     include_active_principal: bool = True,
@@ -188,6 +195,12 @@ def emit_audit_record(
         event["authorization_mode"] = authorization_mode
     if duration_ms is not None:
         event["duration_ms"] = duration_ms
+    if signal_id:
+        event["signal_id"] = signal_id
+    if signal_type:
+        event["signal_type"] = signal_type
+    if status_transition:
+        event["status_transition"] = status_transition
     if principal_id:
         event["principal_id"] = principal_id
     if principal_type:

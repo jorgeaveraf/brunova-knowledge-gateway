@@ -12,6 +12,8 @@ from googleapiclient.errors import HttpError
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.operation_history import (
+    AgentSignalOperation,
+    AgentSignalOperationHistoryEntry,
     GovernedOperation,
     OperationHistoryEntry,
     OperationHistoryStore,
@@ -21,6 +23,7 @@ from app.operation_history import (
 LOGGING_READ_SCOPE = "https://www.googleapis.com/auth/logging.read"
 SERVICE_NAME = "brunova-knowledge-gateway"
 MUTATION_ACTIONS = tuple(operation.value for operation in GovernedOperation)
+AGENT_SIGNAL_ACTIONS = tuple(operation.value for operation in AgentSignalOperation)
 
 
 class CloudLoggingOperationHistoryStore(OperationHistoryStore):
@@ -81,6 +84,33 @@ class CloudLoggingOperationHistoryStore(OperationHistoryStore):
             project_id,
         )
 
+    def list_agent_signals(
+        self,
+        *,
+        signal_id: str | None,
+        operation: AgentSignalOperation | None,
+        limit: int,
+    ) -> list[AgentSignalOperationHistoryEntry]:
+        try:
+            service, project_id = self._client()
+            response = (
+                service.entries()
+                .list(
+                    body={
+                        "resourceNames": [f"projects/{project_id}"],
+                        "filter": self._agent_signal_filter(signal_id, operation),
+                        "orderBy": "timestamp desc",
+                        "pageSize": limit,
+                    }
+                )
+                .execute()
+            )
+            return self._safe_agent_signal_entries(response.get("entries", ()))
+        except WorkspaceAdapterError:
+            raise
+        except Exception as error:
+            raise self._map_error(error) from error
+
     @staticmethod
     def _filter(
         source_id: str | None,
@@ -101,6 +131,29 @@ class CloudLoggingOperationHistoryStore(OperationHistoryStore):
         ]
         if source_id:
             filters.append(f'jsonPayload.source_id="{source_id}"')
+        return " AND ".join(filters)
+
+    @staticmethod
+    def _agent_signal_filter(
+        signal_id: str | None,
+        operation: AgentSignalOperation | None,
+    ) -> str:
+        action_filter = (
+            f'jsonPayload.action="{operation.value}"'
+            if operation
+            else "(" + " OR ".join(
+                f'jsonPayload.action="{action}"' for action in AGENT_SIGNAL_ACTIONS
+            ) + ")"
+        )
+        filters = [
+            'resource.type="cloud_run_revision"',
+            f'resource.labels.service_name="{SERVICE_NAME}"',
+            f'jsonPayload.service="{SERVICE_NAME}"',
+            'jsonPayload.provider="agent_signals"',
+            action_filter,
+        ]
+        if signal_id:
+            filters.append(f'jsonPayload.signal_id="{signal_id}"')
         return " AND ".join(filters)
 
     @staticmethod
@@ -132,6 +185,52 @@ class CloudLoggingOperationHistoryStore(OperationHistoryStore):
                             if isinstance(payload.get("approval_reference"), str)
                             else None
                         ),
+                        request_id=request_id,
+                        correlation_id=(
+                            payload.get("correlation_id")
+                            if isinstance(payload.get("correlation_id"), str)
+                            else request_id
+                        ),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        return safe
+
+    @staticmethod
+    def _safe_agent_signal_entries(
+        entries: list[dict[str, Any]] | tuple[Any, ...],
+    ) -> list[AgentSignalOperationHistoryEntry]:
+        safe: list[AgentSignalOperationHistoryEntry] = []
+        for raw_entry in entries:
+            payload = raw_entry.get("jsonPayload") or {}
+            request_id = payload.get("request_id")
+            signal_id = payload.get("signal_id")
+            timestamp = raw_entry.get("timestamp") or payload.get("timestamp")
+            try:
+                if (
+                    not isinstance(request_id, str)
+                    or not isinstance(signal_id, str)
+                    or not isinstance(timestamp, str)
+                    or not timestamp
+                ):
+                    continue
+                safe.append(
+                    AgentSignalOperationHistoryEntry(
+                        timestamp=timestamp,
+                        operation=AgentSignalOperation(payload.get("action")),
+                        signal_id=signal_id,
+                        signal_type=(
+                            payload.get("signal_type")
+                            if isinstance(payload.get("signal_type"), str)
+                            else None
+                        ),
+                        status_transition=(
+                            payload.get("status_transition")
+                            if isinstance(payload.get("status_transition"), str)
+                            else None
+                        ),
+                        result=OperationResult(payload.get("result")),
                         request_id=request_id,
                         correlation_id=(
                             payload.get("correlation_id")

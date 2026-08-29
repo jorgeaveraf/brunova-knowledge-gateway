@@ -25,6 +25,8 @@ PUBLIC_PATHS = frozenset(
         "/openapi.json",
         "/redoc",
         "/auth/hubspot/callback",
+        # This route performs dedicated Google OIDC authentication in-app.
+        "/events/agent-signals",
     }
 )
 

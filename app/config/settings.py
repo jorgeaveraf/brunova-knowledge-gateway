@@ -28,6 +28,10 @@ class Settings:
     n8n_timeout_seconds: int = 30
     openwa_discovery_ttl_seconds: int = 60
     openwa_timeout_seconds: int = 30
+    agent_signal_bucket: str = ""
+    agent_signal_prefix: str = "agent-signals/items/"
+    agent_signal_claim_lease_seconds: int = 1800
+    agent_signal_completed_retention_days: int = 30
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -94,6 +98,12 @@ class Settings:
             _positive_environment_int("N8N_TIMEOUT_SECONDS", 30),
             _positive_environment_int("OPENWA_DISCOVERY_TTL_SECONDS", 60),
             _positive_environment_int("OPENWA_TIMEOUT_SECONDS", 30),
+            os.getenv("AGENT_SIGNAL_BUCKET", "").strip()
+            or os.getenv("SOURCE_PROPOSAL_BUCKET", "").strip(),
+            os.getenv("AGENT_SIGNAL_PREFIX", "").strip()
+            or "agent-signals/items/",
+            _positive_environment_int("AGENT_SIGNAL_CLAIM_LEASE_SECONDS", 1800),
+            _positive_environment_int("AGENT_SIGNAL_COMPLETED_RETENTION_DAYS", 30),
         )
 
 

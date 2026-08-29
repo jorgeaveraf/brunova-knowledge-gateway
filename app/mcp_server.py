@@ -1,6 +1,7 @@
 """Governed MCP interface backed exclusively by Knowledge Gateway operations."""
 
 import os
+import re
 import time
 from collections.abc import Callable
 from typing import Any, Literal, TypeVar
@@ -51,6 +52,8 @@ from app.document_production import (
 )
 from app.policies.content_mutation import ContentMutationPolicy
 from app.operation_history import (
+    AgentSignalOperation,
+    AgentSignalOperationHistoryEntry,
     DEFAULT_OPERATION_HISTORY_LIMIT,
     GovernedOperation,
     OperationHistoryEntry,
@@ -93,6 +96,12 @@ from app.source_governance import (
     SourceProposalSummary,
 )
 from app.source_registry import Classification, SourceRegistryMetadata
+from app.agent_signals import (
+    AgentSignalRecord,
+    AgentSignalStatusResult,
+    SignalPriority,
+    SignalStatus,
+)
 
 T = TypeVar("T")
 MCP_DOCUMENT_RESULT_LIMIT = 20
@@ -173,6 +182,21 @@ class DocumentTabMutationToolResult(DocumentTabMutationResult):
 
 class OperationHistoryToolResult(BaseModel):
     operations: list[OperationHistoryEntry]
+    request_id: str
+
+
+class AgentSignalListToolResult(BaseModel):
+    signals: list[AgentSignalRecord]
+    request_id: str
+
+
+class AgentSignalToolResult(BaseModel):
+    signal: AgentSignalRecord
+    request_id: str
+
+
+class AgentSignalOperationHistoryToolResult(BaseModel):
+    operations: list[AgentSignalOperationHistoryEntry]
     request_id: str
 
 
@@ -398,6 +422,14 @@ MANAGEMENT_ONLY_TOOLS = frozenset(
         "create_source_proposal",
         "list_source_proposals",
         "get_source_proposal",
+        "list_agent_signals",
+        "get_agent_signal",
+        "claim_agent_signal",
+        "complete_agent_signal",
+        "dismiss_agent_signal",
+        "release_agent_signal",
+        "agent_signal_status",
+        "get_agent_signal_operation_history",
     }
 )
 
@@ -427,6 +459,8 @@ TOOL_CAPABILITIES: dict[str, str] = {
 
 
 def _tool_provider(name: str) -> str:
+    if "agent_signal" in name:
+        return "agent_signals"
     if name.startswith("hubspot_"):
         return "hubspot"
     if name.startswith("n8n_"):
@@ -500,7 +534,7 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.24.0",
+    version="0.25.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
@@ -637,6 +671,21 @@ def _execute_tool(
             authorization_mode=authorization_mode,
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
+    except Exception:
+        emit_audit_record(
+            request_id=request_id,
+            action=action,
+            resource_id=signal_id,
+            resource_type="agent_signal",
+            result="error",
+            http_status=500,
+            error_code="unhandled_error",
+            provider="agent_signals",
+            tool=action,
+            signal_id=signal_id,
+            status_transition=status_transition,
+        )
+        raise
     except Exception:
         emit_audit_record(
             request_id=request_id,
@@ -1678,6 +1727,264 @@ async def _execute_hubspot_tool(
             approval_reference=approval_reference,
         )
         raise
+
+
+def _agent_signal_inbox(runtime: KnowledgeRuntime):
+    if runtime.agent_signal_inbox is None:
+        raise WorkspaceAdapterError(
+            "agent_signal_inbox_unavailable",
+            "Agent Signal Inbox is not configured.",
+            503,
+        )
+    return runtime.agent_signal_inbox
+
+
+def _execute_agent_signal_tool(
+    *,
+    ctx: Context,
+    action: str,
+    operation: Callable[[KnowledgeRuntime, str], T],
+    signal_id: str | None = None,
+    status_transition: str | None = None,
+) -> T:
+    request_id = _mcp_request_id(ctx)
+    try:
+        result = operation(get_runtime_gateway(), request_id)
+        signal = getattr(result, "signal", None)
+        emit_audit_record(
+            request_id=request_id,
+            action=action,
+            resource_id=signal_id,
+            resource_type="agent_signal",
+            result="success",
+            http_status=200,
+            provider="agent_signals",
+            tool=action,
+            signal_id=signal_id,
+            signal_type=getattr(signal, "signal_type", None),
+            status_transition=status_transition,
+        )
+        return result
+    except WorkspaceAdapterError as error:
+        emit_audit_record(
+            request_id=request_id,
+            action=action,
+            resource_id=signal_id,
+            resource_type="agent_signal",
+            result="rejected" if error.status_code < 500 else "error",
+            http_status=error.status_code,
+            error_code=error.code,
+            provider="agent_signals",
+            tool=action,
+            signal_id=signal_id,
+            status_transition=status_transition,
+        )
+        raise RuntimeError(f"{error.code}: {error.message}") from error
+
+
+@mcp_server.tool()
+def list_agent_signals(
+    ctx: Context,
+    status: SignalStatus | None = SignalStatus.PENDING,
+    priority: SignalPriority | None = None,
+    signal_type: str | None = None,
+    source: str | None = None,
+    limit: int = 25,
+) -> AgentSignalListToolResult:
+    """List Agent Signal Inbox items, urgent first and oldest first."""
+
+    return _execute_agent_signal_tool(
+        ctx=ctx,
+        action="list_agent_signals",
+        operation=lambda runtime, request_id: AgentSignalListToolResult(
+            signals=_agent_signal_inbox(runtime).list(
+                status=status,
+                priority=priority,
+                signal_type=signal_type,
+                source=source,
+                limit=limit,
+            ),
+            request_id=request_id,
+        ),
+    )
+
+
+@mcp_server.tool()
+def get_agent_signal(signal_id: str, ctx: Context) -> AgentSignalToolResult:
+    """Get one Agent Signal by its durable signal_id."""
+
+    return _execute_agent_signal_tool(
+        ctx=ctx,
+        action="get_agent_signal",
+        signal_id=signal_id,
+        operation=lambda runtime, request_id: AgentSignalToolResult(
+            signal=_agent_signal_inbox(runtime).get(signal_id),
+            request_id=request_id,
+        ),
+    )
+
+
+@mcp_server.tool()
+def claim_agent_signal(signal_id: str, ctx: Context) -> AgentSignalToolResult:
+    """Atomically claim a pending Agent Signal for the current management principal."""
+
+    return _execute_agent_signal_tool(
+        ctx=ctx,
+        action="agent_signal_claimed",
+        signal_id=signal_id,
+        status_transition="pending->claimed",
+        operation=lambda runtime, request_id: AgentSignalToolResult(
+            signal=_agent_signal_inbox(runtime).claim(
+                signal_id, principal_id=active_principal().id
+            ),
+            request_id=request_id,
+        ),
+    )
+
+
+@mcp_server.tool()
+def complete_agent_signal(
+    signal_id: str,
+    completion_summary: str,
+    ctx: Context,
+    outcome_metadata: dict[str, Any] | None = None,
+) -> AgentSignalToolResult:
+    """Complete a claimed Agent Signal with a brief safe outcome summary."""
+
+    return _execute_agent_signal_tool(
+        ctx=ctx,
+        action="agent_signal_completed",
+        signal_id=signal_id,
+        status_transition="claimed->completed",
+        operation=lambda runtime, request_id: AgentSignalToolResult(
+            signal=_agent_signal_inbox(runtime).complete(
+                signal_id,
+                completion_summary=completion_summary,
+                outcome_metadata=outcome_metadata,
+            ),
+            request_id=request_id,
+        ),
+    )
+
+
+@mcp_server.tool()
+def dismiss_agent_signal(
+    signal_id: str, reason: str, ctx: Context
+) -> AgentSignalToolResult:
+    """Dismiss a pending or claimed Agent Signal with a brief reason."""
+
+    return _execute_agent_signal_tool(
+        ctx=ctx,
+        action="agent_signal_dismissed",
+        signal_id=signal_id,
+        status_transition="pending|claimed->dismissed",
+        operation=lambda runtime, request_id: AgentSignalToolResult(
+            signal=_agent_signal_inbox(runtime).dismiss(signal_id, reason=reason),
+            request_id=request_id,
+        ),
+    )
+
+
+@mcp_server.tool()
+def release_agent_signal(signal_id: str, ctx: Context) -> AgentSignalToolResult:
+    """Release a claimed Agent Signal back to pending."""
+
+    return _execute_agent_signal_tool(
+        ctx=ctx,
+        action="agent_signal_released",
+        signal_id=signal_id,
+        status_transition="claimed->pending",
+        operation=lambda runtime, request_id: AgentSignalToolResult(
+            signal=_agent_signal_inbox(runtime).release(signal_id),
+            request_id=request_id,
+        ),
+    )
+
+
+@mcp_server.tool()
+def agent_signal_status(ctx: Context) -> AgentSignalStatusResult:
+    """Return safe Agent Signal Inbox health and counts without signal content."""
+
+    request_id = _mcp_request_id(ctx)
+    runtime: KnowledgeRuntime | None = None
+    push_configured = bool(
+        os.getenv("AGENT_SIGNAL_PUSH_AUDIENCE", "").strip()
+        and os.getenv("AGENT_SIGNAL_PUSH_SERVICE_ACCOUNT", "").strip()
+    )
+    try:
+        runtime = get_runtime_gateway()
+        result = _agent_signal_inbox(runtime).status(push_configured=push_configured)
+        result.request_id = request_id
+        available = True
+    except Exception:
+        configured = bool(
+            getattr(getattr(runtime, "settings", None), "agent_signal_bucket", "")
+        )
+        result = AgentSignalStatusResult(
+            configured=configured,
+            pubsub_push_configured=push_configured,
+            inbox_available=False,
+            pending_count=0,
+            urgent_count=0,
+            claimed_count=0,
+            request_id=request_id,
+        )
+        available = False
+    emit_audit_record(
+        request_id=request_id,
+        action="agent_signal_status",
+        resource_id=None,
+        resource_type="agent_signal_status",
+        result="success" if available else "error",
+        http_status=200 if available else 503,
+        error_code=None if available else "agent_signal_inbox_unavailable",
+        provider="agent_signals",
+        tool="agent_signal_status",
+    )
+    return result
+
+
+@mcp_server.tool()
+def get_agent_signal_operation_history(
+    ctx: Context,
+    signal_id: str | None = None,
+    operation: AgentSignalOperation | None = None,
+    limit: int = 10,
+) -> AgentSignalOperationHistoryToolResult:
+    """List content-free Agent Signal lifecycle audit metadata."""
+
+    if limit < 1 or limit > 50:
+        raise RuntimeError(
+            "operation_history_limit_invalid: Operation history limit must be between 1 and 50."
+        )
+    if signal_id is not None and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", signal_id
+    ):
+        raise RuntimeError("agent_signal_id_invalid: Agent Signal ID is invalid.")
+
+    def query(
+        runtime: KnowledgeRuntime, request_id: str
+    ) -> AgentSignalOperationHistoryToolResult:
+        store = runtime.operation_history_store
+        if store is None or not hasattr(store, "list_agent_signals"):
+            raise WorkspaceAdapterError(
+                "operation_history_unavailable",
+                "Agent Signal operation history is unavailable.",
+                503,
+            )
+        return AgentSignalOperationHistoryToolResult(
+            operations=store.list_agent_signals(
+                signal_id=signal_id, operation=operation, limit=limit
+            ),
+            request_id=request_id,
+        )
+
+    return _execute_agent_signal_tool(
+        ctx=ctx,
+        action="get_agent_signal_operation_history",
+        signal_id=signal_id,
+        operation=query,
+    )
 
 
 @mcp_server.tool()
