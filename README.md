@@ -823,8 +823,11 @@ conservan. Ambos periodos son configurables sin crear scheduler o lock service.
 El contrato común admite `signal_id`, `signal_type`, `priority`, `occurred_at`,
 `source`, `reason`, `references` y `metadata`. La extensión allowlisted de
 `whatsapp_attention_required` valida `contact`, `conversation` y un `preview`
-máximo de 500 caracteres. El Gateway no recupera conversaciones, media ni CRM,
-y recibir una señal no ejecuta ninguna tool downstream.
+máximo de 500 caracteres. `contact.hubspot_contact_id` es enriquecimiento
+opcional: ausente, `null`, vacío o whitespace se normaliza a `null` y solo se
+proyecta a `references` cuando contiene un identificador real. El Gateway no
+recupera conversaciones, media ni CRM, y recibir una señal no ejecuta ninguna
+tool downstream.
 
 Las tools `list_agent_signals`, `get_agent_signal`, `claim_agent_signal`,
 `complete_agent_signal`, `dismiss_agent_signal`, `release_agent_signal` y

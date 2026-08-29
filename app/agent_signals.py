@@ -48,7 +48,15 @@ class WhatsAppContact(BaseModel):
 
     sender_phone: str = Field(min_length=1, max_length=64)
     sender_name: str = Field(min_length=1, max_length=256)
-    hubspot_contact_id: str = Field(min_length=1, max_length=128)
+    hubspot_contact_id: str | None = Field(default=None, max_length=128)
+
+    @field_validator("hubspot_contact_id", mode="before")
+    @classmethod
+    def normalize_optional_hubspot_contact_id(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
 
 
 class WhatsAppConversation(BaseModel):
@@ -100,8 +108,11 @@ class AgentSignalPayload(BaseModel):
                 "session_id": self.conversation.session_id,
                 "chat_id": self.conversation.chat_id,
                 "message_id": self.conversation.message_id,
-                "hubspot_contact_id": self.contact.hubspot_contact_id,
             }
+            if self.contact.hubspot_contact_id:
+                expected_references["hubspot_contact_id"] = (
+                    self.contact.hubspot_contact_id
+                )
             for key, value in expected_references.items():
                 existing = self.references.get(key)
                 if existing is not None and existing != value:

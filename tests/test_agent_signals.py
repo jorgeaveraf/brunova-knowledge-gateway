@@ -158,6 +158,11 @@ def test_c_invalid_common_and_whatsapp_specific_schema_are_rejected():
         AgentSignalPayload.model_validate(invalid)
 
     invalid = signal_dict()
+    del invalid["contact"]
+    with pytest.raises(ValueError):
+        AgentSignalPayload.model_validate(invalid)
+
+    invalid = signal_dict()
     del invalid["conversation"]
     with pytest.raises(ValueError):
         AgentSignalPayload.model_validate(invalid)
@@ -174,6 +179,38 @@ def test_c_invalid_common_and_whatsapp_specific_schema_are_rejected():
         "metadata": {},
     }
     assert AgentSignalPayload.model_validate(future).contact is None
+
+
+def test_whatsapp_hubspot_enrichment_accepts_value_null_absent_and_empty():
+    enriched = AgentSignalPayload.model_validate(signal_dict())
+
+    null_data = signal_dict(signal_id="sig-null")
+    null_data["contact"]["hubspot_contact_id"] = None
+    null_signal = AgentSignalPayload.model_validate(null_data)
+
+    absent_data = signal_dict(signal_id="sig-absent")
+    del absent_data["contact"]["hubspot_contact_id"]
+    absent_signal = AgentSignalPayload.model_validate(absent_data)
+
+    empty_data = signal_dict(signal_id="sig-empty")
+    empty_data["contact"]["hubspot_contact_id"] = "  \t "
+    empty_signal = AgentSignalPayload.model_validate(empty_data)
+
+    assert enriched.contact.hubspot_contact_id == "test-contact"
+    assert enriched.references["hubspot_contact_id"] == "test-contact"
+    for signal in (null_signal, absent_signal, empty_signal):
+        assert signal.contact.hubspot_contact_id is None
+        assert "hubspot_contact_id" not in signal.references
+
+
+def test_whatsapp_hubspot_enrichment_normalizes_a_real_identifier():
+    data = signal_dict(signal_id="sig-normalized")
+    data["contact"]["hubspot_contact_id"] = "  contact-123  "
+
+    signal = AgentSignalPayload.model_validate(data)
+
+    assert signal.contact.hubspot_contact_id == "contact-123"
+    assert signal.references["hubspot_contact_id"] == "contact-123"
 
 
 def test_e_f_g_list_orders_urgent_then_oldest_and_gets_by_id():
