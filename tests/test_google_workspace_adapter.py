@@ -501,6 +501,41 @@ def test_create_document_targets_only_authorized_source_root():
     )
 
 
+def test_create_spreadsheet_targets_only_authorized_source_root():
+    create_request = Mock()
+    create_request.execute.return_value = {
+        "id": "created_spreadsheet_123",
+        "name": "Controlled Workbook",
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": ["allowed_folder_123"],
+    }
+    files = Mock()
+    files.create.return_value = create_request
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(
+        settings(), credentials_factory=Mock(), service_builder=Mock(return_value=drive)
+    )
+    source_registry_instance = source_registry()
+    allowed = SourceAccessPolicy(settings(), source_registry_instance).authorize_source(
+        source_registry_instance.get("career_ops")
+    )
+
+    created = adapter.create_spreadsheet(source=allowed, name="Controlled Workbook")
+
+    assert created.id == "created_spreadsheet_123"
+    assert created.mime_type == "application/vnd.google-apps.spreadsheet"
+    files.create.assert_called_once_with(
+        body={
+            "name": "Controlled Workbook",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+            "parents": ["allowed_folder_123"],
+        },
+        fields="id,name,mimeType,modifiedTime,driveId,parents",
+        supportsAllDrives=True,
+    )
+
+
 def test_copy_native_document_preserves_source_and_targets_explicit_folder():
     copy_request = Mock()
     copy_request.execute.return_value = {

@@ -116,3 +116,54 @@ class ArtifactReferenceCodec:
                 "The document tab reference is invalid for the selected artifact.",
                 403,
             ) from error
+
+    def encode_sheet(self, *, source_id: str, artifact_id: str, sheet_id: str) -> str:
+        """Return an opaque sheet handle bound to one source and spreadsheet."""
+
+        nonce = os.urandom(12)
+        payload = json.dumps(
+            {
+                "v": 1,
+                "source_id": source_id,
+                "artifact_id": artifact_id,
+                "sheet_id": sheet_id,
+            },
+            separators=(",", ":"),
+        ).encode()
+        encrypted = AESGCM(self._key).encrypt(
+            nonce, payload, b"brunova-spreadsheet-sheet-ref"
+        )
+        token = base64.urlsafe_b64encode(nonce + encrypted).decode().rstrip("=")
+        return f"sheet_{token}"
+
+    def decode_sheet(
+        self, sheet_ref: str, *, source_id: str, artifact_id: str
+    ) -> str:
+        """Resolve a sheet handle only for its bound source and spreadsheet."""
+
+        try:
+            prefix = "sheet_"
+            if not sheet_ref.startswith(prefix):
+                raise ValueError
+            encoded = sheet_ref[len(prefix) :]
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = AESGCM(self._key).decrypt(
+                raw[:12], raw[12:], b"brunova-spreadsheet-sheet-ref"
+            )
+            claims = json.loads(payload)
+            if (
+                claims.get("v") != 1
+                or claims.get("source_id") != source_id
+                or claims.get("artifact_id") != artifact_id
+            ):
+                raise ValueError
+            sheet_id = claims.get("sheet_id")
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError
+            return sheet_id
+        except Exception as error:
+            raise WorkspaceAdapterError(
+                "spreadsheet_sheet_reference_invalid",
+                "The sheet reference is invalid for the selected spreadsheet.",
+                403,
+            ) from error

@@ -44,6 +44,7 @@ OFFICE_ARTIFACT_MIME_TYPES = {
 }
 ARTIFACT_METADATA_FIELDS = "files(name,mimeType,size,modifiedTime)"
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
+GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
 GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
 
@@ -416,6 +417,36 @@ class GoogleWorkspaceAdapter:
                 id=metadata["id"],
                 name=metadata.get("name", name),
                 mime_type=metadata.get("mimeType", GOOGLE_DOC_MIME_TYPE),
+                modified_time=metadata.get("modifiedTime", ""),
+                drive_id=metadata.get("driveId"),
+                ancestor_ids=(source.definition.location_id,),
+                parent_ids=tuple(metadata.get("parents", [source.definition.location_id])),
+            )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def create_spreadsheet(self, *, source: AllowedSource, name: str) -> WorkspaceResource:
+        """Create only a native Google Sheet at the approved source root."""
+
+        try:
+            metadata = (
+                self._drive()
+                .files()
+                .create(
+                    body={
+                        "name": name,
+                        "mimeType": GOOGLE_SHEET_MIME_TYPE,
+                        "parents": [source.definition.location_id],
+                    },
+                    fields="id,name,mimeType,modifiedTime,driveId,parents",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", name),
+                mime_type=metadata.get("mimeType", GOOGLE_SHEET_MIME_TYPE),
                 modified_time=metadata.get("modifiedTime", ""),
                 drive_id=metadata.get("driveId"),
                 ancestor_ids=(source.definition.location_id,),

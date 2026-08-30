@@ -25,6 +25,7 @@ class GovernedOperation(str, Enum):
     COPY_SOURCE_ARTIFACT = "copy_source_artifact"
     RENAME_SOURCE_ARTIFACT = "rename_source_artifact"
     EDIT_SOURCE_DOCUMENT = "edit_source_document"
+    EDIT_SOURCE_SPREADSHEET = "edit_source_spreadsheet"
     CREATE_DOCUMENT_TAB = "create_document_tab"
     RENAME_DOCUMENT_TAB = "rename_document_tab"
     DELETE_DOCUMENT_TAB = "delete_document_tab"

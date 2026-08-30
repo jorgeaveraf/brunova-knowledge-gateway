@@ -223,6 +223,18 @@ class FakeWorkspaceAdapter:
             parent_ids=("allowed_folder_123",),
         )
 
+    def create_spreadsheet(self, *, source, name):
+        self.created.append((source.definition.id, name))
+        return WorkspaceResource(
+            id="created_spreadsheet_123",
+            name=name,
+            mime_type="application/vnd.google-apps.spreadsheet",
+            modified_time="2026-08-22T00:00:00Z",
+            drive_id=None,
+            ancestor_ids=("allowed_folder_123",),
+            parent_ids=("allowed_folder_123",),
+        )
+
     def move_resource(self, *, resource, destination):
         self.moved.append((resource.id, destination.id))
         return WorkspaceResource(
@@ -367,12 +379,57 @@ class FakeDocsAdapter:
 class FakeSheetsAdapter:
     max_cells = 100
 
-    def get_range(self, resource, *, range_name):
+    def __init__(self):
+        self.operations = []
+
+    def get_structure(self, resource):
+        return {
+            "title": resource.name,
+            "locale": "en_US",
+            "time_zone": "America/Mexico_City",
+            "sheets": [
+                {
+                    "sheet_id": "7",
+                    "title": "Summary",
+                    "index": 0,
+                    "row_count": 100,
+                    "column_count": 20,
+                    "frozen_row_count": 1,
+                    "frozen_column_count": 0,
+                },
+                {
+                    "sheet_id": "8",
+                    "title": "Data",
+                    "index": 1,
+                    "row_count": 200,
+                    "column_count": 10,
+                    "frozen_row_count": 0,
+                    "frozen_column_count": 0,
+                },
+            ],
+        }
+
+    def get_range(self, resource, *, range_name, value_render_option="FORMATTED_VALUE"):
+        if value_render_option == "FORMULA":
+            values = [["=SUM(A2:A10)"]]
+        elif range_name == "Summary!A1:B1":
+            values = [["Name", "Total"]]
+        else:
+            values = [["Header"], ["Value"]]
         return SheetRangeContent(
             spreadsheet_id=resource.id,
             range=range_name,
-            values=[["Header"], ["Value"]],
+            values=values,
         )
+
+    def apply_operations(
+        self, resource, *, operations, sheet_id_resolver, sheet_title_to_id
+    ):
+        for operation in operations:
+            sheet_ref = getattr(operation, "sheet_ref", None)
+            if sheet_ref:
+                assert sheet_id_resolver(sheet_ref) in (7, 8)
+        self.operations.extend(operations)
 
 
 class FakeDiscovery:
@@ -479,6 +536,9 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
         "inspect_document_structure",
         "edit_source_document",
         "validate_document_structure",
+        "inspect_spreadsheet_structure",
+        "edit_source_spreadsheet",
+        "validate_spreadsheet_structure",
         "inspect_document_tab",
         "create_document_tab",
         "rename_document_tab",
@@ -1032,6 +1092,268 @@ def test_developer_create_update_and_move_need_no_approval(monkeypatch):
         "create",
         "update",
         "move",
+    }
+
+
+def test_developer_spreadsheet_lifecycle_and_tool_filtering(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+    principal = Principal(
+        id="dev_hq_delivery",
+        type="developer",
+        status="active",
+        providers=ProviderScope(workspace=True),
+        sources=frozenset({"career_ops"}),
+        capabilities=CapabilityScope(
+            read=True, create=True, update=True, move=True, convert=True
+        ),
+    )
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="spreadsheet_12345"
+    )
+    xlsx_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="xlsx_artifact_123"
+    )
+
+    async def scenario():
+        token = bind_principal(principal)
+        try:
+            async with Client(mcp_module.mcp_server) as client:
+                tools = await client.list_tools()
+                created = await client.call_tool(
+                    "create_source_artifact",
+                    {"source_id": "career_ops", "name": "Scoped Sheet", "type": "spreadsheet"},
+                )
+                inspected = await client.call_tool(
+                    "inspect_spreadsheet_structure",
+                    {"source_id": "career_ops", "artifact_ref": artifact_ref},
+                )
+                copied = await client.call_tool(
+                    "copy_source_artifact",
+                    {
+                        "source_id": "career_ops",
+                        "artifact_ref": artifact_ref,
+                        "name": "Scoped Sheet Copy",
+                    },
+                )
+                sheet_ref = inspected.structured_content["sheets"][0]["sheet_ref"]
+                edited = await client.call_tool(
+                    "edit_source_spreadsheet",
+                    {
+                        "source_id": "career_ops",
+                        "artifact_ref": artifact_ref,
+                        "operations": [
+                            {
+                                "operation": "set_values",
+                                "range": "Summary!A1:B1",
+                                "values": [["Name", "=SUM(A2:A10)"]],
+                                "value_input_option": "USER_ENTERED",
+                            },
+                            {
+                                "operation": "insert_rows",
+                                "sheet_ref": sheet_ref,
+                                "start_index": 2,
+                                "count": 1,
+                            },
+                        ],
+                    },
+                )
+                validated = await client.call_tool(
+                    "validate_spreadsheet_structure",
+                    {
+                        "source_id": "career_ops",
+                        "artifact_ref": artifact_ref,
+                        "requirements": {
+                            "expected_sheets": ["Summary", "Data"],
+                            "expected_headers": [
+                                {"range": "Summary!A1:B1", "values": ["Name", "Total"]}
+                            ],
+                            "required_ranges": [
+                                {"range": "Summary!B1:B1", "require_formula": True}
+                            ],
+                        },
+                    },
+                )
+                converted = await client.call_tool(
+                    "convert_source_artifact",
+                    {
+                        "source_id": "career_ops",
+                        "artifact_ref": xlsx_ref,
+                        "target_type": "google_sheet",
+                    },
+                )
+                denied_delete = await client.call_tool(
+                    "delete_source_artifact",
+                    {"source_id": "career_ops", "artifact_ref": artifact_ref},
+                )
+                denied_share = await client.call_tool(
+                    "share_source_artifact",
+                    {
+                        "source_id": "career_ops",
+                        "artifact_ref": artifact_ref,
+                        "audience": "reviewer@example.com",
+                    },
+                )
+                return tools, created, inspected, copied, edited, validated, converted, denied_delete, denied_share
+        finally:
+            reset_principal(token)
+
+    tools, created, inspected, copied, edited, validated, converted, denied_delete, denied_share = run(scenario())
+
+    names = {tool.name for tool in tools.tools}
+    assert {"inspect_spreadsheet_structure", "edit_source_spreadsheet", "validate_spreadsheet_structure", "convert_source_artifact"} <= names
+    assert {"delete_source_artifact", "share_source_artifact", "hubspot_list_tools", "n8n_status", "openwa_status", "list_agent_signals"}.isdisjoint(names)
+    assert created.is_error is False
+    assert created.structured_content["artifact"]["type"] == "spreadsheet"
+    assert inspected.is_error is False
+    assert copied.is_error is False
+    assert copied.structured_content["artifact"]["type"] == "spreadsheet"
+    assert edited.is_error is False
+    assert edited.structured_content["applied_operations"] == 2
+    assert validated.structured_content["passed"] is True
+    assert converted.is_error is False
+    assert converted.structured_content["created_artifact_type"] == "google_sheet"
+    assert denied_delete.is_error is True
+    assert denied_share.is_error is True
+    edit_audit = next(
+        call.kwargs for call in audit.call_args_list if call.kwargs["action"] == "edit_source_spreadsheet"
+    )
+    assert edit_audit["authorization_mode"] == "principal_scope"
+    assert "operations" not in edit_audit
+
+
+def test_management_spreadsheet_edit_requires_approval_and_enforces_mime_and_scope(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    sheet_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="spreadsheet_12345"
+    )
+    doc_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="document_12345"
+    )
+    cross_source_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="another_source", artifact_id="spreadsheet_12345"
+    )
+    operation = {
+        "operation": "set_values",
+        "range": "Summary!A1:A1",
+        "values": [["Safe"]],
+    }
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            approved = await client.call_tool(
+                "edit_source_spreadsheet",
+                {"source_id": "career_ops", "artifact_ref": sheet_ref, "operations": [operation], "approval_reference": "decision-sheet-test"},
+            )
+            missing_approval = await client.call_tool(
+                "edit_source_spreadsheet",
+                {"source_id": "career_ops", "artifact_ref": sheet_ref, "operations": [operation]},
+            )
+            wrong_mime = await client.call_tool(
+                "edit_source_spreadsheet",
+                {"source_id": "career_ops", "artifact_ref": doc_ref, "operations": [operation], "approval_reference": "decision-sheet-test"},
+            )
+            cross_source = await client.call_tool(
+                "edit_source_spreadsheet",
+                {"source_id": "career_ops", "artifact_ref": cross_source_ref, "operations": [operation], "approval_reference": "decision-sheet-test"},
+            )
+        outside = runtime(in_source=False)
+        monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: outside)
+        outside_ref = outside.artifact_reference_codec.encode(
+            source_id="career_ops", artifact_id="spreadsheet_12345"
+        )
+        async with Client(mcp_module.mcp_server) as client:
+            outside_source = await client.call_tool(
+                "edit_source_spreadsheet",
+                {"source_id": "career_ops", "artifact_ref": outside_ref, "operations": [operation], "approval_reference": "decision-sheet-test"},
+            )
+        return approved, missing_approval, wrong_mime, cross_source, outside_source
+
+    approved, missing_approval, wrong_mime, cross_source, outside_source = run(scenario())
+
+    assert approved.is_error is False
+    assert "mutation_approval_required" in missing_approval.content[0].text
+    assert "resource_type_invalid" in wrong_mime.content[0].text
+    assert "artifact_reference_invalid" in cross_source.content[0].text
+    assert "resource_not_in_source" in outside_source.content[0].text
+
+
+def test_developer_spreadsheet_edit_denies_capability_and_source_escalation(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    audit = Mock()
+    monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="spreadsheet_12345"
+    )
+    operation = {
+        "operation": "clear_range",
+        "range": "Summary!A1:A1",
+    }
+
+    async def call_as(principal):
+        token = bind_principal(principal)
+        try:
+            async with Client(mcp_module.mcp_server) as client:
+                return await client.call_tool(
+                    "edit_source_spreadsheet",
+                    {
+                        "source_id": "career_ops",
+                        "artifact_ref": artifact_ref,
+                        "operations": [operation],
+                        "approval_reference": "cannot-elevate-scope",
+                    },
+                )
+        finally:
+            reset_principal(token)
+
+    capability_denied = run(
+        call_as(
+            Principal(
+                id="developer_read_only",
+                type="developer",
+                status="active",
+                providers=ProviderScope(workspace=True),
+                sources=frozenset({"career_ops"}),
+                capabilities=CapabilityScope(read=True),
+            )
+        )
+    )
+    source_denied = run(
+        call_as(
+            Principal(
+                id="developer_other_source",
+                type="developer",
+                status="active",
+                providers=ProviderScope(workspace=True),
+                sources=frozenset({"another_source"}),
+                capabilities=CapabilityScope(read=True, update=True),
+            )
+        )
+    )
+    provider_denied = run(
+        call_as(
+            Principal(
+                id="developer_no_workspace",
+                type="developer",
+                status="active",
+                providers=ProviderScope(),
+                sources=frozenset({"career_ops"}),
+                capabilities=CapabilityScope(read=True, update=True),
+            )
+        )
+    )
+
+    assert "tool_denied" in capability_denied.content[0].text
+    assert "source_denied" in source_denied.content[0].text
+    assert "tool_denied" in provider_denied.content[0].text
+    assert {call.kwargs.get("error_code") for call in audit.call_args_list} >= {
+        "capability_denied",
+        "source_denied",
+        "provider_denied",
     }
 
 

@@ -56,3 +56,22 @@ def test_tab_reference_is_opaque_and_bound_to_source_and_artifact():
 
     assert wrong_artifact.value.code == "document_tab_reference_invalid"
     assert tampered.value.code == "document_tab_reference_invalid"
+
+
+def test_sheet_reference_is_opaque_and_bound_to_source_and_spreadsheet():
+    codec = ArtifactReferenceCodec.for_testing("ephemeral-unit-test-key")
+    reference = codec.encode_sheet(
+        source_id="career_ops", artifact_id="spreadsheet_12345", sheet_id="7"
+    )
+
+    assert reference.startswith("sheet_")
+    assert codec.decode_sheet(
+        reference, source_id="career_ops", artifact_id="spreadsheet_12345"
+    ) == "7"
+
+    with pytest.raises(WorkspaceAdapterError) as wrong_artifact:
+        codec.decode_sheet(
+            reference, source_id="career_ops", artifact_id="another_spreadsheet"
+        )
+
+    assert wrong_artifact.value.code == "spreadsheet_sheet_reference_invalid"

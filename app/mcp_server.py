@@ -71,6 +71,7 @@ from app.knowledge import (
     inspect_authorized_source_artifacts,
     inspect_authorized_document_structure,
     inspect_authorized_document_tab,
+    inspect_authorized_spreadsheet_structure,
     list_authorized_source_files,
     list_registered_sources,
     list_registered_source_proposals,
@@ -85,8 +86,10 @@ from app.knowledge import (
     retrieve_authorized_sheet_range,
     share_authorized_source_artifact,
     edit_authorized_source_document,
+    edit_authorized_source_spreadsheet,
     update_authorized_source_artifact,
     validate_authorized_document_structure,
+    validate_authorized_spreadsheet_structure,
 )
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
 from app.source_discovery.interface import CandidateDetailsResponse, DiscoveryResponse
@@ -101,6 +104,13 @@ from app.agent_signals import (
     AgentSignalStatusResult,
     SignalPriority,
     SignalStatus,
+)
+from app.spreadsheet_production import (
+    SpreadsheetEditOperation,
+    SpreadsheetEditResult,
+    SpreadsheetQualityRequirements,
+    SpreadsheetQualityResult,
+    SpreadsheetStructure,
 )
 
 T = TypeVar("T")
@@ -169,6 +179,18 @@ class DocumentEditToolResult(DocumentEditResult):
 
 
 class DocumentQualityToolResult(DocumentQualityResult):
+    request_id: str
+
+
+class SpreadsheetStructureToolResult(SpreadsheetStructure):
+    request_id: str
+
+
+class SpreadsheetEditToolResult(SpreadsheetEditResult):
+    request_id: str
+
+
+class SpreadsheetQualityToolResult(SpreadsheetQualityResult):
     request_id: str
 
 
@@ -439,6 +461,8 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "inspect_document_structure": "read",
     "inspect_document_tab": "read",
     "validate_document_structure": "read",
+    "inspect_spreadsheet_structure": "read",
+    "validate_spreadsheet_structure": "read",
     "list_source_documents": "read",
     "inspect_source_artifacts": "read",
     "retrieve_document": "read",
@@ -450,6 +474,7 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "rename_document_tab": "update",
     "delete_document_tab": "update",
     "edit_source_document": "update",
+    "edit_source_spreadsheet": "update",
     "update_source_artifact": "update",
     "move_source_artifact": "move",
     "delete_source_artifact": "delete",
@@ -534,7 +559,7 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.25.1",
+    version="0.26.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
@@ -952,7 +977,7 @@ def copy_source_artifact(
     approval_reference: str = "",
     destination_ref: str | None = None,
 ) -> ArtifactReferenceMutationToolResult:
-    """Copy one native Google Doc while preserving the source artifact."""
+    """Copy one native Google Doc or Sheet while preserving the source artifact."""
 
     return _execute_tool(
         ctx=ctx,
@@ -973,7 +998,7 @@ def copy_source_artifact(
         ),
         source_id=source_id,
         resource_id=artifact_ref,
-        resource_type="google_document",
+        resource_type="google_drive_artifact",
         result_resource_id=lambda result: result.artifact.artifact_ref,
         approval_reference=ContentMutationPolicy.normalized_approval_reference(approval_reference),
     )
@@ -1265,14 +1290,110 @@ def validate_document_structure(
 
 
 @mcp_server.tool()
+def inspect_spreadsheet_structure(
+    source_id: str,
+    artifact_ref: str,
+    ctx: Context,
+) -> SpreadsheetStructureToolResult:
+    """Inspect allowlisted Google Sheets metadata without returning cell contents."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="inspect_spreadsheet_structure",
+        operation=lambda runtime, request_id: SpreadsheetStructureToolResult(
+            **inspect_authorized_spreadsheet_structure(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                sheets_adapter=runtime.sheets_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_spreadsheet_structure",
+    )
+
+
+@mcp_server.tool()
+def edit_source_spreadsheet(
+    source_id: str,
+    artifact_ref: str,
+    operations: list[SpreadsheetEditOperation],
+    ctx: Context,
+    approval_reference: str = "",
+) -> SpreadsheetEditToolResult:
+    """Apply bounded, allowlisted semantic operations to a native Google Sheet."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="edit_source_spreadsheet",
+        operation=lambda runtime, request_id: SpreadsheetEditToolResult(
+            **edit_authorized_source_spreadsheet(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                sheets_adapter=runtime.sheets_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                operations=operations,
+                approval_reference=approval_reference,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_spreadsheet",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(
+            approval_reference
+        ),
+    )
+
+
+@mcp_server.tool()
+def validate_spreadsheet_structure(
+    source_id: str,
+    artifact_ref: str,
+    requirements: SpreadsheetQualityRequirements,
+    ctx: Context,
+) -> SpreadsheetQualityToolResult:
+    """Run bounded structural and value-presence checks on a native Google Sheet."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="validate_spreadsheet_structure",
+        operation=lambda runtime, request_id: SpreadsheetQualityToolResult(
+            **validate_authorized_spreadsheet_structure(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                sheets_adapter=runtime.sheets_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                requirements=requirements,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_spreadsheet_quality",
+    )
+
+
+@mcp_server.tool()
 def create_source_artifact(
     source_id: str,
     name: str,
-    type: Literal["document"],
+    type: Literal["document", "spreadsheet"],
     ctx: Context,
     approval_reference: str = "",
 ) -> SourceMutationToolResult:
-    """Create one native Google Doc at an approved, create-enabled source root."""
+    """Create one native Google Doc or Sheet at an approved source root."""
 
     return _execute_tool(
         ctx=ctx,
@@ -1289,7 +1410,7 @@ def create_source_artifact(
             request_id=request_id,
         ),
         source_id=source_id,
-        resource_type="google_document",
+        resource_type=f"google_{type}",
         result_resource_id=lambda result: result.artifact.id,
         approval_reference=ContentMutationPolicy.normalized_approval_reference(
             approval_reference

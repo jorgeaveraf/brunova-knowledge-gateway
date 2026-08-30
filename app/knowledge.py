@@ -32,6 +32,15 @@ from app.document_production import (
 from app.policies.content_mutation import ContentMutationPolicy, MutationOperation
 from app.policies.source_access import SourceAccessPolicy
 from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
+from app.policies.workspace import SpreadsheetMutationPolicy
+from app.spreadsheet_production import (
+    SpreadsheetEditOperation,
+    SpreadsheetEditResult,
+    SpreadsheetQualityRequirements,
+    SpreadsheetQualityResult,
+    SpreadsheetSheetSummary,
+    SpreadsheetStructure,
+)
 from app.source_discovery.interface import (
     CandidateDetailsResponse,
     DiscoveryResult,
@@ -54,6 +63,7 @@ from app.source_registry import (
 
 SOURCE_CANDIDATE_LOOKUP_LIMIT = 100
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
+GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
 ARTIFACT_TYPES = {
     "application/vnd.google-apps.document": "document",
     "application/vnd.google-apps.spreadsheet": "spreadsheet",
@@ -183,10 +193,10 @@ def create_authorized_source_artifact(
     artifact_type: str,
     approval_reference: str,
 ) -> SourceArtifactMutationResult:
-    if artifact_type != "document":
+    if artifact_type not in {"document", "spreadsheet"}:
         raise WorkspaceAdapterError(
             "mutation_type_not_supported",
-            "Only native Google Docs can be created by this Gateway.",
+            "Only native Google Docs and Google Sheets can be created by this Gateway.",
             422,
         )
     allowed_source = mutation_policy.authorize(
@@ -195,9 +205,10 @@ def create_authorized_source_artifact(
         approval_reference=approval_reference,
     )
     safe_name = mutation_policy.validate_name(name)
-    resource = workspace_adapter.create_document(
-        source=allowed_source,
-        name=safe_name,
+    resource = (
+        workspace_adapter.create_document(source=allowed_source, name=safe_name)
+        if artifact_type == "document"
+        else workspace_adapter.create_spreadsheet(source=allowed_source, name=safe_name)
     )
     return _mutation_result(resource, allowed_source, status="created")
 
@@ -289,9 +300,11 @@ def copy_authorized_source_artifact(
     resource = _resource_from_reference(
         reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
     )
-    if resource.mime_type != GOOGLE_DOC_MIME_TYPE:
+    if resource.mime_type not in {GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE}:
         raise WorkspaceAdapterError(
-            "resource_type_invalid", "Only native Google Docs can be copied by this operation.", 422
+            "resource_type_invalid",
+            "Only native Google Docs and Google Sheets can be copied by this operation.",
+            422,
         )
     destination = (
         _resource_from_reference(
@@ -1041,6 +1054,218 @@ def _tab_structure_signature(tab) -> tuple:
     list_count = sum(1 for paragraph in tab.paragraphs if paragraph.bullet)
     table_shapes = tuple((table.rows, table.columns) for table in tab.tables)
     return heading_levels, list_count, table_shapes
+
+
+def inspect_authorized_spreadsheet_structure(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    sheets_adapter: GoogleSheetsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+) -> SpreadsheetStructure:
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    resource = _resource_from_reference(
+        reference_codec,
+        workspace_adapter,
+        source_policy,
+        allowed_source,
+        source_id,
+        artifact_ref,
+    )
+    if resource.mime_type != GOOGLE_SHEET_MIME_TYPE:
+        raise WorkspaceAdapterError(
+            "resource_type_invalid",
+            "The requested resource is not a native Google Sheet.",
+            422,
+        )
+    metadata = sheets_adapter.get_structure(resource)
+    return SpreadsheetStructure(
+        artifact_ref=artifact_ref,
+        name=resource.name,
+        source_id=source_id,
+        title=str(metadata.get("title", resource.name)),
+        locale=metadata.get("locale"),
+        time_zone=metadata.get("time_zone"),
+        sheets=[
+            SpreadsheetSheetSummary(
+                sheet_ref=reference_codec.encode_sheet(
+                    source_id=source_id,
+                    artifact_id=resource.id,
+                    sheet_id=str(item["sheet_id"]),
+                ),
+                title=str(item["title"]),
+                index=int(item["index"]),
+                row_count=int(item["row_count"]),
+                column_count=int(item["column_count"]),
+                frozen_row_count=int(item.get("frozen_row_count", 0)),
+                frozen_column_count=int(item.get("frozen_column_count", 0)),
+            )
+            for item in metadata.get("sheets", [])
+        ],
+    )
+
+
+def edit_authorized_source_spreadsheet(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    sheets_adapter: GoogleSheetsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    operations: list[SpreadsheetEditOperation],
+    approval_reference: str,
+) -> SpreadsheetEditResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id,
+        operation=MutationOperation.UPDATE,
+        approval_reference=approval_reference,
+    )
+    resource = _resource_from_reference(
+        reference_codec,
+        workspace_adapter,
+        source_policy,
+        allowed_source,
+        source_id,
+        artifact_ref,
+    )
+    if resource.mime_type != GOOGLE_SHEET_MIME_TYPE:
+        raise WorkspaceAdapterError(
+            "resource_type_invalid",
+            "The requested resource is not a native Google Sheet.",
+            422,
+        )
+    metadata = sheets_adapter.get_structure(resource)
+    raw_sheets = metadata.get("sheets", [])
+    valid_sheet_ids = {str(item["sheet_id"]) for item in raw_sheets}
+    refs_to_ids: dict[str, int] = {}
+    ref_titles: dict[str, str] = {}
+    ref_dimensions: dict[str, tuple[int, int]] = {}
+    raw_by_id = {str(item["sheet_id"]): item for item in raw_sheets}
+    for operation in operations:
+        sheet_ref = getattr(operation, "sheet_ref", None)
+        if not sheet_ref:
+            continue
+        sheet_id = reference_codec.decode_sheet(
+            sheet_ref, source_id=source_id, artifact_id=resource.id
+        )
+        if sheet_id not in valid_sheet_ids:
+            raise WorkspaceAdapterError(
+                "spreadsheet_sheet_reference_invalid",
+                "The sheet reference is invalid for the selected spreadsheet.",
+                403,
+            )
+        refs_to_ids[sheet_ref] = int(sheet_id)
+        ref_titles[sheet_ref] = str(raw_by_id[sheet_id]["title"])
+        ref_dimensions[sheet_ref] = (
+            int(raw_by_id[sheet_id]["row_count"]),
+            int(raw_by_id[sheet_id]["column_count"]),
+        )
+    title_to_id = {str(item["title"]): int(item["sheet_id"]) for item in raw_sheets}
+    SpreadsheetMutationPolicy.validate_operations(
+        operations,
+        max_cells=sheets_adapter.max_cells,
+        sheet_titles=set(title_to_id),
+        sheet_ref_titles=ref_titles,
+        sheet_dimensions=ref_dimensions,
+    )
+    sheets_adapter.apply_operations(
+        resource,
+        operations=operations,
+        sheet_id_resolver=lambda sheet_ref: refs_to_ids[sheet_ref],
+        sheet_title_to_id=title_to_id,
+    )
+    return SpreadsheetEditResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        applied_operations=len(operations),
+    )
+
+
+def validate_authorized_spreadsheet_structure(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    sheets_adapter: GoogleSheetsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    requirements: SpreadsheetQualityRequirements,
+) -> SpreadsheetQualityResult:
+    structure = inspect_authorized_spreadsheet_structure(
+        registry=registry,
+        source_policy=source_policy,
+        workspace_adapter=workspace_adapter,
+        sheets_adapter=sheets_adapter,
+        reference_codec=reference_codec,
+        source_id=source_id,
+        artifact_ref=artifact_ref,
+    )
+    artifact_id = reference_codec.decode(artifact_ref, source_id=source_id)
+    resource = workspace_adapter.get_resource(artifact_id)
+    sheet_by_title = {item.title: item for item in structure.sheets}
+    checks: dict[str, bool] = {}
+    for title in requirements.expected_sheets:
+        checks[f"sheet:{title}"] = title in sheet_by_title
+    for dimension in requirements.minimum_dimensions:
+        sheet = sheet_by_title.get(dimension.title)
+        checks[f"dimensions:{dimension.title}"] = bool(
+            sheet
+            and sheet.row_count >= dimension.minimum_rows
+            and sheet.column_count >= dimension.minimum_columns
+        )
+    for required in requirements.required_ranges:
+        parsed = SpreadsheetMutationPolicy.parse_range(
+            required.range, max_cells=sheets_adapter.max_cells
+        )
+        if parsed.sheet_title and parsed.sheet_title not in sheet_by_title:
+            checks[f"range:{required.range}"] = False
+            continue
+        render_option = "FORMULA" if required.require_formula else "FORMATTED_VALUE"
+        values = sheets_adapter.get_range(
+            resource,
+            range_name=required.range,
+            value_render_option=render_option,
+        ).values
+        flattened = [value for row in values for value in row]
+        passed = True
+        if required.must_have_values:
+            passed = any(str(value).strip() for value in flattened)
+        if required.require_formula:
+            passed = passed and any(
+                isinstance(value, str) and value.startswith("=") for value in flattened
+            )
+        if required.no_empty_cells:
+            passed = passed and len(flattened) == parsed.cell_count and all(
+                str(value).strip() for value in flattened
+            )
+        checks[f"range:{required.range}"] = passed
+    for expected in requirements.expected_headers:
+        parsed = SpreadsheetMutationPolicy.parse_range(
+            expected.range, max_cells=sheets_adapter.max_cells
+        )
+        if parsed.sheet_title and parsed.sheet_title not in sheet_by_title:
+            checks[f"headers:{expected.range}"] = False
+            continue
+        values = sheets_adapter.get_range(
+            resource, range_name=expected.range
+        ).values
+        actual = [str(value) for value in (values[0] if values else [])]
+        checks[f"headers:{expected.range}"] = actual == expected.values
+    failures = [name for name, passed in checks.items() if not passed]
+    return SpreadsheetQualityResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        passed=not failures,
+        checks=checks,
+        failures=failures,
+    )
 
 
 def update_authorized_source_artifact(

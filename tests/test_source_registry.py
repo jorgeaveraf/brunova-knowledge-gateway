@@ -101,6 +101,7 @@ def test_versioned_registry_matches_approved_source_capabilities():
     career_ops = registry.get("career_ops").capabilities
     template = registry.get("brunova_template").capabilities
     brunova_management = registry.get("brunova_management").capabilities
+    hq_client = registry.get("hq_client").capabilities
     legacy_archive = registry.get("legacy_archive")
 
     assert career_ops.model_dump() == {
@@ -119,6 +120,15 @@ def test_versioned_registry_matches_approved_source_capabilities():
         "update": True,
         "move": True,
         "delete": False,
+        "share": False,
+        "convert": True,
+    }
+    assert hq_client.model_dump() == {
+        "read": True,
+        "create": True,
+        "update": True,
+        "move": True,
+        "delete": True,
         "share": False,
         "convert": True,
     }

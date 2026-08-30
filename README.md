@@ -14,7 +14,7 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.23.0:
+Arquitectura v0.26.0:
 
 Agents
 ↓
@@ -300,11 +300,13 @@ presencia y la conserva en auditoría.
 
 Las operaciones soportadas están deliberadamente acotadas:
 
-- crear un Google Doc nativo vacío en la raíz de la fuente;
+- crear un Google Doc o Google Sheet nativo vacío en la raíz de la fuente;
 - anexar hasta 4,000 caracteres mediante la operación legacy;
 - resolver artefactos por nombre/ruta exactos a referencias opacas source-bound;
-- copiar y renombrar Google Docs mediante capabilities y aprobación;
+- copiar Google Docs o Sheets y renombrar artifacts mediante capabilities y aprobación;
 - inspeccionar, editar y validar estructura documental de forma semántica;
+- inspeccionar, editar y validar Google Sheets mediante operaciones semánticas
+  acotadas;
 - mover un Google Doc entre carpetas pertenecientes a la misma fuente;
 - enviar un artefacto source-scoped a la papelera recuperable de Drive;
 - conceder acceso `reader` a una dirección de correo explícita sobre un
@@ -313,8 +315,8 @@ Las operaciones soportadas están deliberadamente acotadas:
 El root registrado de una fuente no puede eliminarse ni compartirse como si
 fuera un artefacto contenido.
 
-No hay `batchUpdate` crudo expuesto al consumidor, escritura de Sheets,
-eliminación permanente, ownership, publicación pública ni modificación
+No hay `batchUpdate` crudo expuesto al consumidor, eliminación permanente,
+ownership, publicación pública ni modificación
 automática del Source Registry. El
 contenido enviado en `change` nunca se registra en auditoría. La audiencia
 normalizada de share se conserva en la auditoría interna, pero se excluye de
@@ -342,7 +344,7 @@ Tools disponibles:
   sin aprobar ni aplicar cambios;
 - `list_source_proposals`: lista resúmenes seguros del registro durable;
 - `get_source_proposal`: devuelve el detalle seguro de una propuesta pendiente;
-- `create_source_artifact`: crea únicamente un Google Doc nativo en una fuente
+- `create_source_artifact`: crea un Google Doc o Google Sheet nativo en una fuente
   con capability `create` y la autorización correspondiente al principal;
 - `update_source_artifact`: anexa texto acotado a un Doc source-scoped con
   capability `update`;
@@ -354,7 +356,8 @@ Tools disponibles:
 - `resolve_source_artifact`: consulta el estado actual del corpus Drive de la
   fuente, resuelve recursivamente nombre exacto o logical path y devuelve un
   handle cifrado, autenticado y ligado a esa fuente; no usa índice de artefactos;
-- `copy_source_artifact`: copia un Google Doc nativo sin modificar el original;
+- `copy_source_artifact`: copia un Google Doc o Google Sheet nativo sin modificar
+  el original, preservando estructura y formato mediante Drive copy;
 - `rename_source_artifact`: renombra un artefacto source-scoped;
 - `inspect_document_structure`: devuelve revisión, tabs, índices, párrafos,
   headings, listas, tablas/celdas, headers, footers, imágenes, page setup y
@@ -374,6 +377,12 @@ Tools disponibles:
 - `validate_document_structure`: quality gate read-only para headings,
   placeholders, tablas, header/footer, contenido mínimo, residuos Markdown y
   revisión esperada, con requisitos por tab y paridad estructural entre pares;
+- `inspect_spreadsheet_structure`: devuelve título, locale/timezone y metadata
+  acotada de tabs y grids; los IDs internos se sustituyen por `sheet_ref` opacos;
+- `edit_source_spreadsheet`: acepta operaciones semánticas allowlisted para
+  valores, append, clear, tabs, filas/columnas y formato básico;
+- `validate_spreadsheet_structure`: verifica tabs, dimensiones, headers,
+  rangos requeridos, celdas no vacías y presencia opcional de fórmulas;
 - `delete_source_artifact`: envía un artefacto autorizado a la papelera de
   Drive con capability `delete`;
 - `share_source_artifact`: concede acceso `reader` a una audiencia de correo
@@ -420,6 +429,36 @@ mediante `move_source_artifact(destination_source_id=...)`, pero se excluye de
 listados, retrieval y autorización implícita de conocimiento. No hay destinos
 de archivo inferidos: deben existir de forma explícita y versionada en el Source
 Registry, estar activos y habilitar `move`.
+
+Los XLSM se importan como Google Sheets nativos, pero las macros VBA no deben
+considerarse ejecutables ni preservadas funcionalmente. Después de convertir
+XLSX/XLSM, el `artifact_ref` resultante puede encadenarse directamente con
+inspección, lectura por rango, edición, validación, rename y move.
+
+## Structured Spreadsheet Production
+
+La producción de Sheets exige un `artifact_ref` source-bound y MIME nativo
+`application/vnd.google-apps.spreadsheet`. XLSX/XLSM deben convertirse antes de
+editarse. Todos los rangos deben ser A1 explícitos y cerrados; no se aceptan
+rangos completos como `A:A`, filas abiertas ni whole-sheet writes implícitos.
+
+`set_values` y `append_rows` usan `RAW` por defecto. `USER_ENTERED` debe pedirse
+explícitamente para interpretar fórmulas como `=SUM(A1:A10)`. El formato básico
+incluye bold, italic, font size, alineación horizontal, number format y colores
+de fondo/texto. No se soportan todavía charts, pivots, conditional formatting,
+slicers, protected ranges, named ranges ni data validation avanzada.
+
+Los límites actuales son 50 operaciones por request, como máximo
+`WORKSPACE_SHEET_MAX_CELLS` celdas escritas o afectadas por un rango, 1,000
+filas/columnas por operación y 10 altas/renames/bajas de tabs por request. El
+payload nunca acepta requests crudos de Sheets API y auditoría no registra
+valores ni fórmulas.
+
+Google Sheets API v4 no ofrece en esta superficie una precondición práctica
+equivalente a `WriteControl.requiredRevisionId` de Docs. Por eso inspección y
+edición declaran `concurrency_control: none`: se valida toda la lista antes de
+llamar al provider, pero una falla durante una secuencia que mezcla Values API
+y `batchUpdate` puede dejar aplicadas operaciones anteriores.
 
 ## Structured Document Production
 

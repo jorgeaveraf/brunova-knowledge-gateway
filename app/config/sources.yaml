@@ -93,4 +93,4 @@ sources:
       move: true
       delete: true
       share: false
-      convert: false
+      convert: true
