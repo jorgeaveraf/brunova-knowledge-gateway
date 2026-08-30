@@ -128,6 +128,30 @@ def test_conversion_audit_tracks_lifecycle_ids_without_content(monkeypatch):
     assert "token" not in event
 
 
+def test_asset_audit_hashes_refs_and_records_version_without_content(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+    emit_audit_record(
+        request_id="request-assets",
+        action="edit_source_docx",
+        resource_id="artifact_opaque",
+        resource_type="docx",
+        result="success",
+        http_status=200,
+        source_id="career_ops",
+        revision_id="revision-8",
+        artifact_version="12",
+        asset_refs=["asset_secret_opaque"],
+    )
+    event = json.loads(log_info.call_args.args[0])
+    assert event["revision_id"] == "revision-8"
+    assert event["artifact_version"] == "12"
+    assert len(event["asset_ref_hashes"][0]) == 16
+    assert "asset_secret_opaque" not in log_info.call_args.args[0]
+    assert "content" not in event
+
+
 def test_discovery_audit_contains_count_without_candidate_details(monkeypatch):
     monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
     log_info = Mock()

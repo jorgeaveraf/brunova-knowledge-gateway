@@ -146,6 +146,11 @@ def test_developer_mcp_catalog_is_workspace_only_and_capability_filtered(monkeyp
     assert not any(name.startswith("n8n_") for name in names)
     assert not any(name.startswith("openwa_") for name in names)
     assert "discover_source_candidates" not in names
+    assert "inspect_visual_asset" not in names
+    assert "edit_source_document_images" not in names
+    assert "inspect_docx_structure" not in names
+    assert "edit_source_docx" not in names
+    assert "validate_docx_structure" not in names
     assert denied.is_error is True
     assert "tool_denied" in denied.content[0].text
     assert openwa_denied.is_error is True

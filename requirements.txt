@@ -6,3 +6,7 @@ google-cloud-storage
 PyYAML
 mcp>=2.0,<2.1
 cryptography>=45,<51
+Pillow>=11,<13
+defusedxml>=0.7,<1
+CairoSVG>=2.7,<3
+lxml>=5,<7

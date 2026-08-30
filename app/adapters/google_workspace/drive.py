@@ -1,6 +1,9 @@
 """Governed access to Google Drive metadata and source-scoped mutations."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from io import BytesIO
 from tempfile import SpooledTemporaryFile
 from typing import Any
 
@@ -13,6 +16,7 @@ from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
 from app.adapters.google_workspace.models import (
     ArtifactMetadata,
+    BinaryFileSnapshot,
     DriveFile,
     SourceMetadata,
     WorkspaceResource,
@@ -46,6 +50,7 @@ ARTIFACT_METADATA_FIELDS = "files(name,mimeType,size,modifiedTime)"
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
 GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet"
 GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+MAX_GOVERNED_BINARY_BYTES = 25 * 1024 * 1024
 
 
 class GoogleWorkspaceAdapter:
@@ -251,6 +256,155 @@ class GoogleWorkspaceAdapter:
                 ancestor_ids=tuple(ancestors),
                 parent_ids=tuple(metadata.get("parents", [])),
             )
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def download_binary(
+        self, resource: WorkspaceResource, *, max_bytes: int = MAX_GOVERNED_BINARY_BYTES
+    ) -> BinaryFileSnapshot:
+        """Download one governed blob with bounded memory and version metadata."""
+
+        if resource.mime_type.startswith("application/vnd.google-apps."):
+            raise WorkspaceAdapterError(
+                "resource_type_invalid", "Native Workspace files are not binary artifacts.", 422
+            )
+        try:
+            drive = self._drive()
+            metadata = (
+                drive.files()
+                .get(
+                    fileId=resource.id,
+                    fields="id,mimeType,size,version,md5Checksum,modifiedTime",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            size = int(metadata.get("size", 0))
+            if size < 1 or size > max_bytes:
+                raise WorkspaceAdapterError(
+                    "binary_size_invalid",
+                    f"Binary artifacts must contain between 1 byte and {max_bytes} bytes.",
+                    422,
+                )
+            stream = BytesIO()
+            downloader = MediaIoBaseDownload(
+                stream,
+                drive.files().get_media(fileId=resource.id, supportsAllDrives=True),
+            )
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+                if stream.tell() > max_bytes:
+                    raise WorkspaceAdapterError(
+                        "binary_size_invalid", "The binary artifact exceeds the safe size limit.", 422
+                    )
+            revisions = (
+                drive.revisions()
+                .list(fileId=resource.id, pageSize=200, fields="revisions(id,modifiedTime)")
+                .execute()
+                .get("revisions", [])
+            )
+            head_revision = max(
+                revisions,
+                key=lambda item: str(item.get("modifiedTime", "")),
+                default=None,
+            )
+            return BinaryFileSnapshot(
+                content=stream.getvalue(),
+                version=str(metadata.get("version", "")),
+                md5_checksum=str(metadata.get("md5Checksum", "")),
+                size=size,
+                head_revision_id=str(head_revision["id"]) if head_revision else None,
+            )
+        except WorkspaceAdapterError:
+            raise
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+
+    def replace_binary(
+        self,
+        resource: WorkspaceResource,
+        *,
+        content: bytes,
+        expected_version: str,
+        expected_md5_checksum: str,
+    ) -> WorkspaceResource:
+        """Replace the same Drive blob after a last-moment optimistic check.
+
+        Drive v3 does not document an upload If-Match parameter. A version and
+        checksum recheck closes ordinary stale-write cases, but cannot make the
+        recheck/upload pair atomic. The previous blob revision is pinned.
+        """
+
+        if not content or len(content) > MAX_GOVERNED_BINARY_BYTES:
+            raise WorkspaceAdapterError(
+                "binary_size_invalid", "Replacement content exceeds the safe size limit.", 422
+            )
+        try:
+            drive = self._drive()
+            current = (
+                drive.files()
+                .get(
+                    fileId=resource.id,
+                    fields="id,version,md5Checksum",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            if (
+                str(current.get("version", "")) != expected_version
+                or str(current.get("md5Checksum", "")) != expected_md5_checksum
+            ):
+                raise WorkspaceAdapterError(
+                    "binary_revision_conflict",
+                    "The artifact changed after inspection; no content was overwritten.",
+                    409,
+                )
+            revisions = (
+                drive.revisions()
+                .list(fileId=resource.id, pageSize=200, fields="revisions(id,modifiedTime,keepForever)")
+                .execute()
+                .get("revisions", [])
+            )
+            current_head = max(
+                revisions,
+                key=lambda item: str(item.get("modifiedTime", "")),
+                default=None,
+            )
+            if current_head and not current_head.get("keepForever", False):
+                (
+                    drive.revisions()
+                    .update(
+                        fileId=resource.id,
+                        revisionId=str(current_head["id"]),
+                        body={"keepForever": True},
+                    )
+                    .execute()
+                )
+            media = MediaIoBaseUpload(
+                BytesIO(content), mimetype=resource.mime_type, resumable=False
+            )
+            metadata = (
+                drive.files()
+                .update(
+                    fileId=resource.id,
+                    media_body=media,
+                    fields="id,name,mimeType,modifiedTime,driveId,parents,version,md5Checksum",
+                    supportsAllDrives=True,
+                )
+                .execute()
+            )
+            return WorkspaceResource(
+                id=metadata["id"],
+                name=metadata.get("name", resource.name),
+                mime_type=metadata.get("mimeType", resource.mime_type),
+                modified_time=metadata.get("modifiedTime", ""),
+                drive_id=metadata.get("driveId", resource.drive_id),
+                ancestor_ids=resource.ancestor_ids,
+                parent_ids=tuple(metadata.get("parents", resource.parent_ids)),
+            )
+        except WorkspaceAdapterError:
+            raise
         except (GoogleAuthError, HttpError) as error:
             raise map_google_error(error) from error
 

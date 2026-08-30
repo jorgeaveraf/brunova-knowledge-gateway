@@ -1,7 +1,10 @@
 from unittest.mock import Mock
 
+import pytest
+
 import app.adapters.google_workspace.drive as drive_module
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
+from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import WorkspaceResource
 from app.config.settings import Settings
 from app.policies.source_access import SourceAccessPolicy
@@ -750,3 +753,67 @@ def test_share_resource_grants_reader_to_one_explicit_user_without_notification(
         sendNotificationEmail=False,
         supportsAllDrives=True,
     )
+
+
+def test_replace_binary_rechecks_precondition_pins_previous_revision_and_keeps_identity():
+    current = Mock()
+    current.execute.return_value = {"id": "docx_12345", "version": "7", "md5Checksum": "old-md5"}
+    uploaded = Mock()
+    uploaded.execute.return_value = {
+        "id": "docx_12345", "name": "Active.docx",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "version": "8", "md5Checksum": "new-md5", "parents": ["allowed_folder_123"],
+    }
+    files = Mock()
+    files.get.return_value = current
+    files.update.return_value = uploaded
+    revisions = Mock()
+    revision_list = Mock()
+    revision_list.execute.return_value = {
+        "revisions": [{"id": "rev-7", "modifiedTime": "2026-08-30T00:00:00Z", "keepForever": False}]
+    }
+    revisions.list.return_value = revision_list
+    pin = Mock()
+    revisions.update.return_value = pin
+    drive = Mock()
+    drive.files.return_value = files
+    drive.revisions.return_value = revisions
+    adapter = GoogleWorkspaceAdapter(settings(), credentials_factory=Mock(), service_builder=Mock(return_value=drive))
+    resource = WorkspaceResource(
+        id="docx_12345", name="Active.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        modified_time="", drive_id=None, ancestor_ids=("allowed_folder_123",),
+        parent_ids=("allowed_folder_123",),
+    )
+    result = adapter.replace_binary(
+        resource, content=b"replacement", expected_version="7", expected_md5_checksum="old-md5"
+    )
+    assert result.id == resource.id
+    revisions.update.assert_called_once_with(
+        fileId="docx_12345", revisionId="rev-7", body={"keepForever": True}
+    )
+    pin.execute.assert_called_once_with()
+    assert files.update.call_args.kwargs["fileId"] == "docx_12345"
+    assert "body" not in files.update.call_args.kwargs
+
+
+def test_replace_binary_conflict_does_not_pin_or_upload():
+    current = Mock()
+    current.execute.return_value = {"id": "docx_12345", "version": "8", "md5Checksum": "changed"}
+    files = Mock()
+    files.get.return_value = current
+    drive = Mock()
+    drive.files.return_value = files
+    adapter = GoogleWorkspaceAdapter(settings(), credentials_factory=Mock(), service_builder=Mock(return_value=drive))
+    resource = WorkspaceResource(
+        id="docx_12345", name="Active.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        modified_time="", drive_id=None, ancestor_ids=("allowed_folder_123",),
+    )
+    with pytest.raises(WorkspaceAdapterError) as conflict:
+        adapter.replace_binary(
+            resource, content=b"replacement", expected_version="7", expected_md5_checksum="old-md5"
+        )
+    assert conflict.value.code == "binary_revision_conflict"
+    files.update.assert_not_called()
+    drive.revisions.assert_not_called()

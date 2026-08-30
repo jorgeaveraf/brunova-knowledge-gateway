@@ -14,6 +14,7 @@ from app.adapters.google_workspace.models import (
     SourceMetadata,
     WorkspaceResource,
 )
+from app.artifact_refs import ArtifactReferenceCodec
 from app.auth.principals import (
     CapabilityScope,
     Principal,
@@ -22,7 +23,6 @@ from app.auth.principals import (
     reset_principal,
 )
 from app.config.settings import Settings
-from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
     DocumentEditResult,
     DocumentStructure,
@@ -32,11 +32,10 @@ from app.document_production import (
     TableSummary,
     TabStructure,
 )
+from app.operation_history import GovernedOperation, OperationHistoryEntry
 from app.policies.content_mutation import ContentMutationPolicy
 from app.policies.source_access import SourceAccessPolicy
-from app.operation_history import GovernedOperation, OperationHistoryEntry
 from app.runtime import KnowledgeRuntime
-from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
 from app.source_discovery.interface import (
     CandidateSource,
     DiscoveryResult,
@@ -44,6 +43,7 @@ from app.source_discovery.interface import (
     candidate_identifier,
 )
 from app.source_proposal_store import ProposalObjectConflict, YamlSourceProposalStore
+from app.source_registry import SourceDefinition, SourceRegistry, SourceRegistryDocument
 
 mcp_module = importlib.import_module("app.mcp_server")
 
@@ -542,8 +542,13 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
         "inspect_document_tab",
         "create_document_tab",
         "rename_document_tab",
-            "delete_document_tab",
-            "hubspot_list_tools",
+        "delete_document_tab",
+        "inspect_visual_asset",
+        "edit_source_document_images",
+        "inspect_docx_structure",
+        "edit_source_docx",
+        "validate_docx_structure",
+        "hubspot_list_tools",
             "hubspot_get_user_details",
             "hubspot_search_crm_objects",
             "hubspot_get_crm_objects",
@@ -564,7 +569,7 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
             "release_agent_signal",
             "agent_signal_status",
             "get_agent_signal_operation_history",
-        }
+    }
     tab_tool_schemas = json.dumps(
         [
             tool.model_dump()
@@ -583,6 +588,23 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
     assert '"tab_id"' not in tab_tool_schemas
     assert '"tab_ids"' not in tab_tool_schemas
     assert "tab_ref" in tab_tool_schemas
+    governed_binary_schemas = json.dumps(
+        [
+            tool.model_dump()
+            for tool in result.tools
+            if tool.name
+            in {
+                "inspect_visual_asset",
+                "edit_source_document_images",
+                "inspect_docx_structure",
+                "edit_source_docx",
+                "validate_docx_structure",
+            }
+        ]
+    )
+    assert '"file_id"' not in governed_binary_schemas
+    assert '"drive_id"' not in governed_binary_schemas
+    assert "artifact_ref" in governed_binary_schemas
 
 
 def test_structured_document_production_flow_uses_opaque_refs_and_audits(monkeypatch):

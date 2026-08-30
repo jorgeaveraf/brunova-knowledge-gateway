@@ -14,7 +14,7 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.26.0:
+Arquitectura v0.27.0:
 
 Agents
 ↓
@@ -305,6 +305,10 @@ Las operaciones soportadas están deliberadamente acotadas:
 - resolver artefactos por nombre/ruta exactos a referencias opacas source-bound;
 - copiar Google Docs o Sheets y renombrar artifacts mediante capabilities y aprobación;
 - inspeccionar, editar y validar estructura documental de forma semántica;
+- inspeccionar assets PNG/JPEG/SVG gobernados e insertar o reemplazar imágenes
+  de Google Docs mediante representación transitoria;
+- inspeccionar, editar y validar DOCX nativos sin convertirlos ni cambiar su
+  identidad de Drive;
 - inspeccionar, editar y validar Google Sheets mediante operaciones semánticas
   acotadas;
 - mover un Google Doc entre carpetas pertenecientes a la misma fuente;
@@ -377,6 +381,19 @@ Tools disponibles:
 - `validate_document_structure`: quality gate read-only para headings,
   placeholders, tablas, header/footer, contenido mínimo, residuos Markdown y
   revisión esperada, con requisitos por tab y paridad estructural entre pares;
+- `inspect_visual_asset`: valida firma/MIME real, tamaño y dimensiones de un
+  PNG, JPEG o SVG source-scoped y emite un `asset_ref` opaco;
+- `edit_source_document_images`: inserta por índice inequívoco o reemplaza por
+  `image_ref`, con tamaño opcional, `required_revision_id` y readback;
+- `inspect_docx_structure`: devuelve una vista acotada de párrafos, estilos,
+  tablas, headers/footers, secciones, imágenes, placeholders, feature flags,
+  anchors opacos, `version` y hash de precondición;
+- `edit_source_docx`: aplica operaciones OOXML allowlisted al mismo artifact:
+  `replace_text`, `replace_placeholder`, `set_paragraph_text`,
+  `set_table_cell`, `insert_paragraph`, `delete_paragraph`, `insert_image` y
+  `replace_image`;
+- `validate_docx_structure`: verifica package, texto/placeholders, mínimo de
+  tablas, header/footer, imágenes, secciones y versión esperada;
 - `inspect_spreadsheet_structure`: devuelve título, locale/timezone y metadata
   acotada de tabs y grids; los IDs internos se sustituyen por `sheet_ref` opacos;
 - `edit_source_spreadsheet`: acepta operaciones semánticas allowlisted para
@@ -415,6 +432,80 @@ La extensión se deriva de un MIME type Office conocido, no del nombre del
 archivo. La inspección por sí misma no modifica nada. La conversión y el
 archivado existen como tools separados y solo se ejecutan con capability y la
 autorización aplicable al tipo de principal.
+
+## Governed visual assets
+
+Un asset visual siempre comienza como `artifact_ref` resuelto dentro de la
+misma source autorizada que el documento destino. `inspect_visual_asset`
+descarga de forma acotada, valida el contenido real y devuelve un `asset_ref`
+cifrado y autenticado ligado a `source_id`, artifact y MIME. No se aceptan URLs
+arbitrarias ni Drive IDs crudos.
+
+Google Docs `insertInlineImage` y `replaceImage` requieren una URI recuperable
+por Google, de hasta 2 KB, y solo admiten PNG, JPEG o GIF. Un SVG privado de
+Drive no es insertable directamente. El Gateway sanea SVG (sin scripts,
+handlers, objetos, foreign content, referencias externas o `url(...)`),
+conserva aspect ratio, limita cada dimensión a 4,096 px y el total a 25 MP, y
+rasteriza a PNG. PNG/JPEG se decodifican y verifican antes de usarse.
+
+La representación se publica únicamente en
+`WORKSPACE_ASSET_STAGING_BUCKET` con una URL V4 firmada de corta duración. Docs
+la recupera una vez y el Gateway elimina el objeto de staging en `finally`. No
+se crea una copia PNG permanente en Drive. Configuración no secreta:
+
+- `WORKSPACE_ASSET_STAGING_BUCKET`: bucket dedicado, privado y con lifecycle
+  defensivo;
+- `WORKSPACE_ASSET_STAGING_PREFIX`: default `gateway-assets/`;
+- `WORKSPACE_ASSET_URL_TTL_SECONDS`: default 300.
+
+La inspección de Docs devuelve `image_ref` opacos, tab y dimensiones en puntos;
+además distingue inline/positioned y reporta el layout posicionado cuando
+existe; el object ID interno no se expone. v0.27 solo inserta imágenes inline:
+la API no expone una request para crear o cambiar el layout de positioned
+objects. El reemplazo conserva el objeto/layout existente. La mutación usa
+`WriteControl.requiredRevisionId` y exige que el readback tenga la revisión y
+conteo esperados.
+
+## Native DOCX editing
+
+DOCX se modifica como OOXML directo: se descarga el blob gobernado, se validan
+ZIP y XML, se reserializan solo las partes tocadas, se reemplaza el contenido
+del mismo `fileId`, y se vuelve a descargar. No hay conversión a Google Docs ni
+copia competidora. Las partes no tocadas (styles, relationships, media,
+propiedades y settings) permanecen byte-identical dentro del package.
+
+Los reemplazos de texto concatenan los nodos `w:t` visibles del párrafo, por lo
+que encuentran texto fragmentado entre runs. El replacement adopta el formato
+del primer run afectado; los prefijos/sufijos conservan sus runs, pero no se
+intenta interpolar múltiples estilos dentro del texto nuevo. Headers y footers
+existentes se identifican por su part inequívoca. Las tablas se limitan a set
+de celda y reemplazo de placeholders; no existe un table engine genérico.
+
+Antes de mutar se rechazan packages con macros, firmas digitales, OLE/embedded
+objects, ActiveX, `AlternateContent`, extensiones OOXML no allowlisted, content
+controls o campos complejos. `customXml` se reporta pero se preserva. No se
+expone XML arbitrario. Límites: DOCX 25 MiB, 25 operaciones por request, texto
+de reemplazo 10,000 caracteres, 20 mutaciones de tabla, 20 de párrafo y assets
+de 10 MiB. Insert/delete de párrafo debe ser la única operación basada en
+anchor del request; se reinspecciona antes de la siguiente mutación estructural
+para evitar que un cambio de índices vuelva ambiguos otros anchors.
+
+Drive v3 expone `version` monotónico y `md5Checksum`, pero no documenta una
+precondición atómica `If-Match` para media upload. El Gateway exige version y
+SHA-256 obtenidos en inspección, vuelve a comprobar version+MD5 justo antes del
+upload y responde conflict si cambiaron. Persiste una ventana de carrera entre
+el recheck y el upload; no se afirma atomicidad inexistente. Antes de escribir,
+la revisión blob actual se marca `keepForever`; Drive permite hasta 200
+revisiones conservadas. El readback exige el mismo ID, package válido, hash
+exacto e invariantes solicitadas.
+
+Estas cinco tools nuevas permanecen **management-only en v0.27.0**, aunque las
+mutaciones mapean internamente a `update`. No se amplía automáticamente
+`dev_hq_delivery`: la edición binaria y el staging temporal requieren una fase
+productiva adicional antes de crear una sub-capability developer-visible. La
+auditoría registra principal, source, artifact opaco, operación, resultado,
+approval/authorization mode, revisión/versión y hashes truncados de asset refs;
+nunca binarios, SVG, texto DOCX completo ni URLs firmadas.
 
 ## Artifact lifecycle
 

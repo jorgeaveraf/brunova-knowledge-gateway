@@ -1,5 +1,10 @@
 """Semantic Knowledge Gateway operations shared by HTTP and MCP interfaces."""
 
+from __future__ import annotations
+
+import hashlib
+from contextlib import ExitStack
+
 from app.adapters.google_workspace.docs import GoogleDocsAdapter
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
@@ -17,6 +22,8 @@ from app.adapters.google_workspace.models import (
 from app.adapters.google_workspace.sheets import GoogleSheetsAdapter
 from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
+    MARKDOWN_PATTERNS,
+    PLACEHOLDER_PATTERN,
     ArtifactReference,
     ArtifactReferenceMutationResult,
     DocumentEditOperation,
@@ -26,20 +33,22 @@ from app.document_production import (
     DocumentStructure,
     DocumentTabInspectionResult,
     DocumentTabMutationResult,
-    MARKDOWN_PATTERNS,
-    PLACEHOLDER_PATTERN,
+)
+from app.docx_production import (
+    DOCX_MIME_TYPE,
+    DocxEditOperation,
+    DocxEditResult,
+    DocxPackage,
+    DocxRequirements,
+    DocxStructure,
+    DocxValidationResult,
 )
 from app.policies.content_mutation import ContentMutationPolicy, MutationOperation
 from app.policies.source_access import SourceAccessPolicy
-from app.policies.workspace import ContentReadPolicy, DriveReadPolicy
-from app.policies.workspace import SpreadsheetMutationPolicy
-from app.spreadsheet_production import (
-    SpreadsheetEditOperation,
-    SpreadsheetEditResult,
-    SpreadsheetQualityRequirements,
-    SpreadsheetQualityResult,
-    SpreadsheetSheetSummary,
-    SpreadsheetStructure,
+from app.policies.workspace import (
+    ContentReadPolicy,
+    DriveReadPolicy,
+    SpreadsheetMutationPolicy,
 )
 from app.source_discovery.interface import (
     CandidateDetailsResponse,
@@ -51,6 +60,8 @@ from app.source_governance import (
     SourceProposalRecord,
     SourceProposalSummary,
     candidate_details,
+)
+from app.source_governance import (
     create_source_proposal as build_source_proposal,
 )
 from app.source_proposal_store import SourceProposalStore
@@ -59,6 +70,22 @@ from app.source_registry import (
     SourceDefinition,
     SourceRegistry,
     SourceRegistryMetadata,
+)
+from app.spreadsheet_production import (
+    SpreadsheetEditOperation,
+    SpreadsheetEditResult,
+    SpreadsheetQualityRequirements,
+    SpreadsheetQualityResult,
+    SpreadsheetSheetSummary,
+    SpreadsheetStructure,
+)
+from app.visual_assets import (
+    GoogleDocImageEditResult,
+    GoogleDocImageOperation,
+    TransientAssetPublisher,
+    VisualAssetInspection,
+    inspect_visual_bytes,
+    render_for_insertion,
 )
 
 SOURCE_CANDIDATE_LOOKUP_LIMIT = 100
@@ -225,7 +252,6 @@ def resolve_authorized_source_artifact(
     artifact_type: str | None = None,
 ) -> ArtifactReference:
     """Resolve one exact, authorized resource to an opaque source-bound handle."""
-
     source = registered_source(registry, source_id)
     allowed_source = source_policy.authorize_source(source)
     supplied_name = (name or "").strip()
@@ -249,9 +275,7 @@ def resolve_authorized_source_artifact(
             "artifact_type_invalid", "The requested artifact type is unsupported.", 422
         )
     matches = workspace_adapter.find_resources(
-        name=resolved_name,
-        mime_type=mime_type,
-        source=allowed_source,
+        name=resolved_name, mime_type=mime_type, source=allowed_source
     )
     authorized = []
     for resource in matches:
@@ -276,8 +300,268 @@ def resolve_authorized_source_artifact(
             "The selector matches multiple source artifacts; provide a logical path.",
             409,
         )
-    resource = authorized[0]
-    return _artifact_reference(reference_codec, source_id, resource)
+    return _artifact_reference(reference_codec, source_id, authorized[0])
+
+def inspect_authorized_visual_asset(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+) -> VisualAssetInspection:
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    snapshot = workspace_adapter.download_binary(resource, max_bytes=10 * 1024 * 1024)
+    inspected = inspect_visual_bytes(snapshot.content, resource.mime_type)
+    return VisualAssetInspection(
+        asset_ref=reference_codec.encode_asset(
+            source_id=source_id, artifact_id=resource.id, mime_type=inspected.detected_mime_type
+        ),
+        name=resource.name,
+        mime_type=inspected.detected_mime_type,
+        width_pixels=inspected.width,
+        height_pixels=inspected.height,
+        aspect_ratio=(inspected.width / inspected.height if inspected.width and inspected.height else None),
+        file_size=snapshot.size,
+        source_id=source_id,
+        directly_insertable_in_docs=inspected.detected_mime_type in {"image/png", "image/jpeg"},
+        rendering_required=inspected.detected_mime_type == "image/svg+xml",
+    )
+
+
+def edit_authorized_document_images(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    docs_adapter: GoogleDocsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    required_revision_id: str,
+    operations: list[GoogleDocImageOperation],
+    approval_reference: str,
+) -> GoogleDocImageEditResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id, operation=MutationOperation.UPDATE, approval_reference=approval_reference
+    )
+    if not required_revision_id.strip() or not 1 <= len(operations) <= 10:
+        raise WorkspaceAdapterError(
+            "document_image_operations_invalid",
+            "A revision and between 1 and 10 image operations are required.",
+            422,
+        )
+    document = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    if document.mime_type != GOOGLE_DOC_MIME_TYPE:
+        raise WorkspaceAdapterError("resource_type_invalid", "The target is not a Google Doc.", 422)
+    before = docs_adapter.inspect_structure(
+        document,
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        reference_codec=reference_codec,
+    )
+    publisher = TransientAssetPublisher(
+        bucket_name=docs_adapter._settings.workspace_asset_staging_bucket,
+        prefix=docs_adapter._settings.workspace_asset_staging_prefix,
+        ttl_seconds=docs_adapter._settings.workspace_asset_url_ttl_seconds,
+    )
+    with ExitStack() as stack:
+        prepared = []
+        for operation in operations:
+            asset_id, claimed_mime = reference_codec.decode_asset(
+                operation.asset_ref, source_id=source_id
+            )
+            asset = workspace_adapter.get_resource(asset_id)
+            source_policy.authorize_resource_for_source(asset, allowed_source)
+            if asset.mime_type != claimed_mime:
+                raise WorkspaceAdapterError(
+                    "asset_reference_stale", "The governed asset MIME type has changed.", 409
+                )
+            snapshot = workspace_adapter.download_binary(asset, max_bytes=10 * 1024 * 1024)
+            width = getattr(operation, "width_points", None)
+            height = getattr(operation, "height_points", None)
+            image = render_for_insertion(
+                snapshot.content,
+                asset.mime_type,
+                width_pixels=round(width * 96 / 72) if width else None,
+                height_pixels=round(height * 96 / 72) if height else None,
+            )
+            prepared.append((operation, stack.enter_context(publisher.signed_uri(image))))
+        revision = docs_adapter.edit_images(
+            document,
+            required_revision_id=required_revision_id.strip(),
+            operations_with_uris=prepared,
+            tab_id_resolver=lambda ref: reference_codec.decode_tab(
+                ref, source_id=source_id, artifact_id=document.id
+            ),
+            image_ref_resolver=lambda ref: reference_codec.decode_document_image(
+                ref, source_id=source_id, artifact_id=document.id
+            ),
+        )
+    after = docs_adapter.inspect_structure(
+        document, artifact_ref=artifact_ref, source_id=source_id, reference_codec=reference_codec
+    )
+    inserted = sum(item.operation == "insert_image" for item in operations)
+    if after.revision_id != revision or after.image_count != before.image_count + inserted:
+        raise WorkspaceAdapterError(
+            "document_image_verification_failed", "Docs image readback did not match the requested mutation.", 502
+        )
+    return GoogleDocImageEditResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        revision_id=revision,
+        image_count=after.image_count,
+        applied_operations=len(operations),
+    )
+
+
+def inspect_authorized_docx_structure(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+) -> DocxStructure:
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    if resource.mime_type != DOCX_MIME_TYPE:
+        raise WorkspaceAdapterError("resource_type_invalid", "The artifact is not a DOCX file.", 422)
+    snapshot = workspace_adapter.download_binary(resource)
+    package = DocxPackage(snapshot.content)
+    result = package.inspect(
+        artifact_ref=artifact_ref,
+        name=resource.name,
+        source_id=source_id,
+        artifact_id=resource.id,
+        version=snapshot.version,
+        codec=reference_codec,
+    )
+    return result.model_copy(update={"content_hash": hashlib.sha256(snapshot.content).hexdigest()})
+
+
+def edit_authorized_source_docx(
+    *,
+    mutation_policy: ContentMutationPolicy,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    required_version: str,
+    required_content_hash: str,
+    operations: list[DocxEditOperation],
+    approval_reference: str,
+) -> DocxEditResult:
+    allowed_source = mutation_policy.authorize(
+        source_id=source_id, operation=MutationOperation.UPDATE, approval_reference=approval_reference
+    )
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    if resource.mime_type != DOCX_MIME_TYPE:
+        raise WorkspaceAdapterError("resource_type_invalid", "The artifact is not a DOCX file.", 422)
+    snapshot = workspace_adapter.download_binary(resource)
+    input_hash = hashlib.sha256(snapshot.content).hexdigest()
+    if snapshot.version != required_version.strip() or input_hash != required_content_hash.strip().casefold():
+        raise WorkspaceAdapterError(
+            "binary_revision_conflict", "The DOCX changed after inspection; no content was overwritten.", 409
+        )
+    package = DocxPackage(snapshot.content)
+    asset_cache = {}
+
+    def resolve_asset(asset_ref: str, width: int | None, height: int | None):
+        key = (asset_ref, width, height)
+        if key not in asset_cache:
+            asset_id, mime = reference_codec.decode_asset(asset_ref, source_id=source_id)
+            asset = workspace_adapter.get_resource(asset_id)
+            source_policy.authorize_resource_for_source(asset, allowed_source)
+            if asset.mime_type != mime:
+                raise WorkspaceAdapterError("asset_reference_stale", "The governed asset MIME changed.", 409)
+            binary = workspace_adapter.download_binary(asset, max_bytes=10 * 1024 * 1024)
+            asset_cache[key] = render_for_insertion(
+                binary.content, mime, width_pixels=width, height_pixels=height
+            )
+        return asset_cache[key]
+
+    package.apply(
+        operations,
+        anchor_resolver=lambda anchor: reference_codec.decode_docx_anchor(
+            anchor, source_id=source_id, artifact_id=resource.id
+        ),
+        asset_resolver=resolve_asset,
+    )
+    output = package.to_bytes()
+    output_hash = hashlib.sha256(output).hexdigest()
+    updated = workspace_adapter.replace_binary(
+        resource,
+        content=output,
+        expected_version=snapshot.version,
+        expected_md5_checksum=snapshot.md5_checksum,
+    )
+    if updated.id != resource.id:
+        raise WorkspaceAdapterError("docx_identity_changed", "Drive returned a different artifact identity.", 502)
+    readback = workspace_adapter.download_binary(updated)
+    verified = DocxPackage(readback.content)
+    if hashlib.sha256(readback.content).hexdigest() != output_hash:
+        raise WorkspaceAdapterError("docx_verification_failed", "DOCX readback content differs from upload.", 502)
+    for operation in operations:
+        if operation.operation == "replace_placeholder":
+            checks = verified.validate(
+                DocxRequirements(forbidden_placeholders=[operation.placeholder])
+            )
+            if not checks["forbidden_placeholders"]:
+                raise WorkspaceAdapterError("docx_verification_failed", "A replaced placeholder remains.", 502)
+    return DocxEditResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        version=readback.version,
+        content_hash=output_hash,
+        applied_operations=len(operations),
+    )
+
+
+def validate_authorized_docx_structure(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    requirements: DocxRequirements,
+    expected_version: str | None = None,
+) -> DocxValidationResult:
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    resource = _resource_from_reference(
+        reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
+    )
+    if resource.mime_type != DOCX_MIME_TYPE:
+        raise WorkspaceAdapterError("resource_type_invalid", "The artifact is not a DOCX file.", 422)
+    snapshot = workspace_adapter.download_binary(resource)
+    checks = DocxPackage(snapshot.content).validate(requirements)
+    if expected_version is not None:
+        checks["expected_version"] = snapshot.version == expected_version
+    return DocxValidationResult(
+        artifact_ref=artifact_ref,
+        source_id=source_id,
+        version=snapshot.version,
+        content_hash=hashlib.sha256(snapshot.content).hexdigest(),
+        passed=all(checks.values()),
+        checks=checks,
+    )
 
 
 def copy_authorized_source_artifact(

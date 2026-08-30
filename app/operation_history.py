@@ -29,6 +29,8 @@ class GovernedOperation(str, Enum):
     CREATE_DOCUMENT_TAB = "create_document_tab"
     RENAME_DOCUMENT_TAB = "rename_document_tab"
     DELETE_DOCUMENT_TAB = "delete_document_tab"
+    EDIT_SOURCE_DOCUMENT_IMAGES = "edit_source_document_images"
+    EDIT_SOURCE_DOCX = "edit_source_docx"
 
 
 class AgentSignalOperation(str, Enum):

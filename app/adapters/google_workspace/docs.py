@@ -1,5 +1,7 @@
 """Controlled Google Docs retrieval and allowlisted structured mutation."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
@@ -10,12 +12,14 @@ from googleapiclient.errors import HttpError
 from app.adapters.google_workspace.auth import build_delegated_credentials
 from app.adapters.google_workspace.errors import WorkspaceAdapterError, map_google_error
 from app.adapters.google_workspace.models import GoogleDocContent, WorkspaceResource
-from app.config.settings import Settings
 from app.artifact_refs import ArtifactReferenceCodec
+from app.config.settings import Settings
 from app.document_production import (
+    PLACEHOLDER_PATTERN,
     CreateFooterOperation,
     CreateHeaderOperation,
     DeleteContentOperation,
+    DeleteTableRowOperation,
     DocumentEditOperation,
     DocumentStructure,
     InsertTableColumnOperation,
@@ -26,8 +30,8 @@ from app.document_production import (
     ParagraphStyleOperation,
     ParagraphSummary,
     ReplaceAllTextOperation,
-    SegmentSummary,
     SectionSummary,
+    SegmentSummary,
     TableCellStyleOperation,
     TableCellSummary,
     TableSummary,
@@ -35,8 +39,12 @@ from app.document_production import (
     TextStyleOperation,
     TextStyleSummary,
     UpdateTableCellOperation,
-    DeleteTableRowOperation,
-    PLACEHOLDER_PATTERN,
+)
+from app.visual_assets import (
+    GoogleDocImageOperation,
+    GoogleDocImageSummary,
+    InsertGoogleDocImageOperation,
+    ReplaceGoogleDocImageOperation,
 )
 
 GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document"
@@ -184,6 +192,14 @@ class GoogleDocsAdapter:
             for paragraph in segment.paragraphs
         )
         style = document.get("documentStyle", {})
+        images = list(
+            _document_image_summaries(
+                document,
+                reference_codec=reference_codec,
+                source_id=source_id,
+                artifact_id=resource.id,
+            )
+        )
         return DocumentStructure(
             artifact_ref=artifact_ref,
             name=resource.name,
@@ -200,12 +216,51 @@ class GoogleDocsAdapter:
                     artifact_id=resource.id,
                 )
             ),
-            image_count=len(document.get("inlineObjects", {}))
-            + len(document.get("positionedObjects", {}))
-            + sum(_tab_image_count(tab) for tab in document.get("tabs", [])),
+            image_count=len(images),
+            images=images,
             document_style=_safe_document_style(style),
             placeholders=sorted(set(PLACEHOLDER_PATTERN.findall(all_text)))[:100],
             total_characters=len(all_text),
+        )
+
+    def edit_images(
+        self,
+        resource: WorkspaceResource,
+        *,
+        required_revision_id: str,
+        operations_with_uris: list[tuple[GoogleDocImageOperation, str]],
+        tab_id_resolver: Callable[[str], str],
+        image_ref_resolver: Callable[[str], tuple[str, str]],
+    ) -> str:
+        requests: list[dict[str, Any]] = []
+        for operation, uri in operations_with_uris:
+            if isinstance(operation, InsertGoogleDocImageOperation):
+                location: dict[str, Any] = {"index": operation.index}
+                if operation.segment_id:
+                    location["segmentId"] = operation.segment_id
+                if operation.tab_ref:
+                    location["tabId"] = tab_id_resolver(operation.tab_ref)
+                request: dict[str, Any] = {"uri": uri, "location": location}
+                size: dict[str, Any] = {}
+                if operation.width_points is not None:
+                    size["width"] = {"magnitude": operation.width_points, "unit": "PT"}
+                if operation.height_points is not None:
+                    size["height"] = {"magnitude": operation.height_points, "unit": "PT"}
+                if size:
+                    request["objectSize"] = size
+                requests.append({"insertInlineImage": request})
+            elif isinstance(operation, ReplaceGoogleDocImageOperation):
+                object_id, tab_id = image_ref_resolver(operation.image_ref)
+                request = {
+                    "imageObjectId": object_id,
+                    "uri": uri,
+                    "imageReplaceMethod": operation.replace_method,
+                }
+                if tab_id:
+                    request["tabId"] = tab_id
+                requests.append({"replaceImage": request})
+        return self._batch_update(
+            resource, requests=requests, required_revision_id=required_revision_id
         )
 
     def edit_structure(
@@ -891,3 +946,65 @@ def _operation_requests(
         kind = "createHeader" if isinstance(operation, CreateHeaderOperation) else "createFooter"
         return [{kind: payload}]
     raise WorkspaceAdapterError("document_operation_invalid", "The document operation is not supported.", 422)
+
+
+def _document_image_summaries(
+    document: dict[str, Any],
+    *,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_id: str,
+) -> Iterator[GoogleDocImageSummary]:
+    collections = [
+        ("", None, document.get("inlineObjects", {}), "inlineObjectProperties", "inline"),
+        ("", None, document.get("positionedObjects", {}), "positionedObjectProperties", "positioned"),
+    ]
+    for tab in document.get("tabs", []):
+        tab_id = str(tab.get("tabProperties", {}).get("tabId", ""))
+        tab_ref = (
+            reference_codec.encode_tab(
+                source_id=source_id, artifact_id=artifact_id, tab_id=tab_id
+            )
+            if tab_id
+            else None
+        )
+        document_tab = tab.get("documentTab", {})
+        collections.extend(
+            [
+                (tab_id, tab_ref, document_tab.get("inlineObjects", {}), "inlineObjectProperties", "inline"),
+                (tab_id, tab_ref, document_tab.get("positionedObjects", {}), "positionedObjectProperties", "positioned"),
+            ]
+        )
+    seen: set[tuple[str, str]] = set()
+    for tab_id, tab_ref, objects, property_name, kind in collections:
+        for object_id, value in objects.items():
+            key = (tab_id, str(object_id))
+            if key in seen:
+                continue
+            seen.add(key)
+            embedded = value.get(property_name, {}).get("embeddedObject", {})
+            size = embedded.get("size", {})
+            yield GoogleDocImageSummary(
+                image_ref=reference_codec.encode_document_image(
+                    source_id=source_id,
+                    artifact_id=artifact_id,
+                    object_id=str(object_id),
+                    tab_id=tab_id,
+                ),
+                kind=kind,
+                tab_ref=tab_ref,
+                width_points=_dimension_magnitude(size.get("width")),
+                height_points=_dimension_magnitude(size.get("height")),
+                positioned_layout=value.get(property_name, {})
+                .get("positioning", {})
+                .get("layout"),
+            )
+
+
+def _dimension_magnitude(value: object) -> float | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return float(value.get("magnitude"))
+    except (TypeError, ValueError):
+        return None

@@ -132,3 +132,14 @@ class WorkspaceResource:
     drive_id: Optional[str]
     ancestor_ids: tuple[str, ...]
     parent_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, repr=False)
+class BinaryFileSnapshot:
+    """Content plus Drive's strongest exposed blob precondition metadata."""
+
+    content: bytes
+    version: str
+    md5_checksum: str
+    size: int
+    head_revision_id: str | None = None

@@ -66,6 +66,150 @@ class ArtifactReferenceCodec:
                 403,
             ) from error
 
+    def encode_asset(
+        self, *, source_id: str, artifact_id: str, mime_type: str
+    ) -> str:
+        """Return an opaque visual-asset handle bound to source, file, and MIME."""
+
+        nonce = os.urandom(12)
+        payload = json.dumps(
+            {
+                "v": 1,
+                "source_id": source_id,
+                "artifact_id": artifact_id,
+                "mime_type": mime_type,
+            },
+            separators=(",", ":"),
+        ).encode()
+        encrypted = AESGCM(self._key).encrypt(
+            nonce, payload, b"brunova-visual-asset-ref"
+        )
+        token = base64.urlsafe_b64encode(nonce + encrypted).decode().rstrip("=")
+        return f"asset_{token}"
+
+    def decode_asset(self, asset_ref: str, *, source_id: str) -> tuple[str, str]:
+        """Resolve an asset only in the source and MIME context that issued it."""
+
+        try:
+            prefix = "asset_"
+            if not asset_ref.startswith(prefix):
+                raise ValueError
+            encoded = asset_ref[len(prefix) :]
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = AESGCM(self._key).decrypt(
+                raw[:12], raw[12:], b"brunova-visual-asset-ref"
+            )
+            claims = json.loads(payload)
+            if claims.get("v") != 1 or claims.get("source_id") != source_id:
+                raise ValueError
+            artifact_id = claims.get("artifact_id")
+            mime_type = claims.get("mime_type")
+            if not isinstance(artifact_id, str) or not artifact_id:
+                raise ValueError
+            if not isinstance(mime_type, str) or not mime_type:
+                raise ValueError
+            return artifact_id, mime_type
+        except Exception as error:
+            raise WorkspaceAdapterError(
+                "asset_reference_invalid",
+                "The asset reference is invalid for the selected source.",
+                403,
+            ) from error
+
+    def encode_docx_anchor(
+        self,
+        *,
+        source_id: str,
+        artifact_id: str,
+        part: str,
+        kind: str,
+        indexes: list[int],
+    ) -> str:
+        nonce = os.urandom(12)
+        payload = json.dumps(
+            {
+                "v": 1,
+                "source_id": source_id,
+                "artifact_id": artifact_id,
+                "part": part,
+                "kind": kind,
+                "indexes": indexes,
+            },
+            separators=(",", ":"),
+        ).encode()
+        encrypted = AESGCM(self._key).encrypt(
+            nonce, payload, b"brunova-docx-anchor-ref"
+        )
+        token = base64.urlsafe_b64encode(nonce + encrypted).decode().rstrip("=")
+        return f"docx_anchor_{token}"
+
+    def decode_docx_anchor(
+        self, anchor: str, *, source_id: str, artifact_id: str
+    ) -> tuple[str, str, tuple[int, ...]]:
+        try:
+            prefix = "docx_anchor_"
+            if not anchor.startswith(prefix):
+                raise ValueError
+            encoded = anchor[len(prefix) :]
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = json.loads(
+                AESGCM(self._key).decrypt(
+                    raw[:12], raw[12:], b"brunova-docx-anchor-ref"
+                )
+            )
+            if (
+                payload.get("v") != 1
+                or payload.get("source_id") != source_id
+                or payload.get("artifact_id") != artifact_id
+            ):
+                raise ValueError
+            part, kind, indexes = payload.get("part"), payload.get("kind"), payload.get("indexes")
+            if not isinstance(part, str) or not isinstance(kind, str):
+                raise ValueError
+            if not isinstance(indexes, list) or not all(isinstance(i, int) and i >= 0 for i in indexes):
+                raise ValueError
+            return part, kind, tuple(indexes)
+        except Exception as error:
+            raise WorkspaceAdapterError(
+                "docx_anchor_invalid",
+                "The DOCX structural anchor is invalid for the selected artifact.",
+                403,
+            ) from error
+
+    def encode_document_image(
+        self, *, source_id: str, artifact_id: str, object_id: str, tab_id: str = ""
+    ) -> str:
+        nonce = os.urandom(12)
+        payload = json.dumps(
+            {"v": 1, "source_id": source_id, "artifact_id": artifact_id, "object_id": object_id, "tab_id": tab_id},
+            separators=(",", ":"),
+        ).encode()
+        encrypted = AESGCM(self._key).encrypt(nonce, payload, b"brunova-document-image-ref")
+        return "doc_image_" + base64.urlsafe_b64encode(nonce + encrypted).decode().rstrip("=")
+
+    def decode_document_image(
+        self, image_ref: str, *, source_id: str, artifact_id: str
+    ) -> tuple[str, str]:
+        try:
+            prefix = "doc_image_"
+            if not image_ref.startswith(prefix):
+                raise ValueError
+            encoded = image_ref[len(prefix) :]
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = json.loads(AESGCM(self._key).decrypt(raw[:12], raw[12:], b"brunova-document-image-ref"))
+            if payload.get("v") != 1 or payload.get("source_id") != source_id or payload.get("artifact_id") != artifact_id:
+                raise ValueError
+            object_id, tab_id = payload.get("object_id"), payload.get("tab_id", "")
+            if not isinstance(object_id, str) or not object_id or not isinstance(tab_id, str):
+                raise ValueError
+            return object_id, tab_id
+        except Exception as error:
+            raise WorkspaceAdapterError(
+                "document_image_reference_invalid",
+                "The image reference is invalid for the selected document.",
+                403,
+            ) from error
+
     def encode_tab(self, *, source_id: str, artifact_id: str, tab_id: str) -> str:
         """Return an opaque tab handle bound to one source and artifact."""
 

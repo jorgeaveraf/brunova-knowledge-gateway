@@ -1,5 +1,7 @@
 """Governed MCP interface backed exclusively by Knowledge Gateway operations."""
 
+from __future__ import annotations
+
 import os
 import re
 import time
@@ -9,7 +11,8 @@ from typing import Any, Literal, TypeVar
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, TextContent, Tool as MCPTool
+from mcp.types import CallToolResult, TextContent
+from mcp.types import Tool as MCPTool
 from pydantic import BaseModel
 
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
@@ -31,13 +34,19 @@ from app.adapters.n8n.models import (
 from app.adapters.n8n.runtime import get_n8n_client
 from app.adapters.openwa.models import OpenWAStatusResult, OpenWAToolListResult
 from app.adapters.openwa.runtime import get_openwa_client
+from app.agent_signals import (
+    AgentSignalRecord,
+    AgentSignalStatusResult,
+    SignalPriority,
+    SignalStatus,
+)
+from app.artifact_refs import ArtifactReferenceCodec
 from app.audit import correlation_id, emit_audit_record
 from app.auth.principals import (
     CapabilityScope,
     active_principal,
     authorize_workspace_operation,
 )
-from app.artifact_refs import ArtifactReferenceCodec
 from app.document_production import (
     ArtifactReference,
     ArtifactReferenceConversionResult,
@@ -50,47 +59,59 @@ from app.document_production import (
     DocumentTabInspectionResult,
     DocumentTabMutationResult,
 )
-from app.policies.content_mutation import ContentMutationPolicy
+from app.docx_production import (
+    DocxEditOperation,
+    DocxEditResult,
+    DocxRequirements,
+    DocxStructure,
+    DocxValidationResult,
+)
+from app.knowledge import (
+    convert_authorized_source_artifact,
+    copy_authorized_source_artifact,
+    create_authorized_document_tab,
+    create_authorized_source_artifact,
+    delete_authorized_document_tab,
+    delete_authorized_source_artifact,
+    discover_candidate_sources,
+    edit_authorized_document_images,
+    edit_authorized_source_document,
+    edit_authorized_source_docx,
+    edit_authorized_source_spreadsheet,
+    get_candidate_details,
+    inspect_authorized_document_structure,
+    inspect_authorized_document_tab,
+    inspect_authorized_docx_structure,
+    inspect_authorized_source_artifacts,
+    inspect_authorized_spreadsheet_structure,
+    inspect_authorized_visual_asset,
+    list_authorized_source_files,
+    list_registered_source_proposals,
+    list_registered_sources,
+    move_authorized_source_artifact,
+    register_source_proposal,
+    registered_source,
+    registered_source_proposal,
+    rename_authorized_document_tab,
+    rename_authorized_source_artifact,
+    resolve_authorized_source_artifact,
+    retrieve_authorized_document,
+    retrieve_authorized_sheet_range,
+    share_authorized_source_artifact,
+    update_authorized_source_artifact,
+    validate_authorized_document_structure,
+    validate_authorized_docx_structure,
+    validate_authorized_spreadsheet_structure,
+)
 from app.operation_history import (
+    DEFAULT_OPERATION_HISTORY_LIMIT,
     AgentSignalOperation,
     AgentSignalOperationHistoryEntry,
-    DEFAULT_OPERATION_HISTORY_LIMIT,
     GovernedOperation,
     OperationHistoryEntry,
     list_authorized_operation_history,
 )
-from app.knowledge import (
-    discover_candidate_sources,
-    copy_authorized_source_artifact,
-    create_authorized_document_tab,
-    create_authorized_source_artifact,
-    convert_authorized_source_artifact,
-    delete_authorized_source_artifact,
-    delete_authorized_document_tab,
-    get_candidate_details,
-    inspect_authorized_source_artifacts,
-    inspect_authorized_document_structure,
-    inspect_authorized_document_tab,
-    inspect_authorized_spreadsheet_structure,
-    list_authorized_source_files,
-    list_registered_sources,
-    list_registered_source_proposals,
-    move_authorized_source_artifact,
-    rename_authorized_source_artifact,
-    rename_authorized_document_tab,
-    resolve_authorized_source_artifact,
-    registered_source,
-    registered_source_proposal,
-    register_source_proposal,
-    retrieve_authorized_document,
-    retrieve_authorized_sheet_range,
-    share_authorized_source_artifact,
-    edit_authorized_source_document,
-    edit_authorized_source_spreadsheet,
-    update_authorized_source_artifact,
-    validate_authorized_document_structure,
-    validate_authorized_spreadsheet_structure,
-)
+from app.policies.content_mutation import ContentMutationPolicy
 from app.runtime import KnowledgeRuntime, get_runtime_gateway
 from app.source_discovery.interface import CandidateDetailsResponse, DiscoveryResponse
 from app.source_governance import (
@@ -99,18 +120,17 @@ from app.source_governance import (
     SourceProposalSummary,
 )
 from app.source_registry import Classification, SourceRegistryMetadata
-from app.agent_signals import (
-    AgentSignalRecord,
-    AgentSignalStatusResult,
-    SignalPriority,
-    SignalStatus,
-)
 from app.spreadsheet_production import (
     SpreadsheetEditOperation,
     SpreadsheetEditResult,
     SpreadsheetQualityRequirements,
     SpreadsheetQualityResult,
     SpreadsheetStructure,
+)
+from app.visual_assets import (
+    GoogleDocImageEditResult,
+    GoogleDocImageOperation,
+    VisualAssetInspection,
 )
 
 T = TypeVar("T")
@@ -179,6 +199,26 @@ class DocumentEditToolResult(DocumentEditResult):
 
 
 class DocumentQualityToolResult(DocumentQualityResult):
+    request_id: str
+
+
+class VisualAssetToolResult(VisualAssetInspection):
+    request_id: str
+
+
+class DocumentImageEditToolResult(GoogleDocImageEditResult):
+    request_id: str
+
+
+class DocxStructureToolResult(DocxStructure):
+    request_id: str
+
+
+class DocxEditToolResult(DocxEditResult):
+    request_id: str
+
+
+class DocxValidationToolResult(DocxValidationResult):
     request_id: str
 
 
@@ -452,6 +492,11 @@ MANAGEMENT_ONLY_TOOLS = frozenset(
         "release_agent_signal",
         "agent_signal_status",
         "get_agent_signal_operation_history",
+        "inspect_visual_asset",
+        "edit_source_document_images",
+        "inspect_docx_structure",
+        "edit_source_docx",
+        "validate_docx_structure",
     }
 )
 
@@ -467,6 +512,9 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "inspect_source_artifacts": "read",
     "retrieve_document": "read",
     "retrieve_sheet_range": "read",
+    "inspect_visual_asset": "read",
+    "inspect_docx_structure": "read",
+    "validate_docx_structure": "read",
     "copy_source_artifact": "create",
     "create_source_artifact": "create",
     "rename_source_artifact": "update",
@@ -475,6 +523,8 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "delete_document_tab": "update",
     "edit_source_document": "update",
     "edit_source_spreadsheet": "update",
+    "edit_source_document_images": "update",
+    "edit_source_docx": "update",
     "update_source_artifact": "update",
     "move_source_artifact": "move",
     "delete_source_artifact": "delete",
@@ -559,7 +609,7 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.26.0",
+    version="0.27.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
@@ -614,6 +664,9 @@ def _execute_tool(
     approval_reference: str | None = None,
     audience: str | None = None,
     destination_source_id: str | None = None,
+    revision_id: Callable[[T], str] | None = None,
+    artifact_version: Callable[[T], str] | None = None,
+    asset_refs: list[str] | None = None,
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
@@ -674,6 +727,9 @@ def _execute_tool(
             tool=action,
             capability=capability,
             authorization_mode=authorization_mode,
+            revision_id=revision_id(result) if revision_id else None,
+            artifact_version=artifact_version(result) if artifact_version else None,
+            asset_refs=asset_refs,
         )
         return result
     except WorkspaceAdapterError as error:
@@ -694,23 +750,9 @@ def _execute_tool(
             tool=action,
             capability=capability,
             authorization_mode=authorization_mode,
+            asset_refs=asset_refs,
         )
         raise RuntimeError(f"{error.code}: {error.message}") from error
-    except Exception:
-        emit_audit_record(
-            request_id=request_id,
-            action=action,
-            resource_id=signal_id,
-            resource_type="agent_signal",
-            result="error",
-            http_status=500,
-            error_code="unhandled_error",
-            provider="agent_signals",
-            tool=action,
-            signal_id=signal_id,
-            status_transition=status_transition,
-        )
-        raise
     except Exception:
         emit_audit_record(
             request_id=request_id,
@@ -729,6 +771,7 @@ def _execute_tool(
             tool=action,
             capability=capability,
             authorization_mode=authorization_mode,
+            asset_refs=asset_refs,
         )
         raise
 
@@ -1286,6 +1329,175 @@ def validate_document_structure(
         source_id=source_id,
         resource_id=artifact_ref,
         resource_type="google_document_quality",
+    )
+
+
+@mcp_server.tool()
+def inspect_visual_asset(
+    source_id: str,
+    artifact_ref: str,
+    ctx: Context,
+) -> VisualAssetToolResult:
+    """Inspect a source-scoped PNG, JPEG, or SVG and issue an opaque asset_ref."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="inspect_visual_asset",
+        operation=lambda runtime, request_id: VisualAssetToolResult(
+            **inspect_authorized_visual_asset(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="governed_visual_asset",
+    )
+
+
+@mcp_server.tool()
+def edit_source_document_images(
+    source_id: str,
+    artifact_ref: str,
+    required_revision_id: str,
+    operations: list[GoogleDocImageOperation],
+    ctx: Context,
+    approval_reference: str = "",
+) -> DocumentImageEditToolResult:
+    """Insert or replace governed assets in a Google Doc at an inspected revision."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="edit_source_document_images",
+        operation=lambda runtime, request_id: DocumentImageEditToolResult(
+            **edit_authorized_document_images(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                docs_adapter=runtime.docs_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                required_revision_id=required_revision_id,
+                operations=operations,
+                approval_reference=approval_reference,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_document_images",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(approval_reference),
+        revision_id=lambda result: result.revision_id,
+        asset_refs=[operation.asset_ref for operation in operations],
+    )
+
+
+@mcp_server.tool()
+def inspect_docx_structure(
+    source_id: str,
+    artifact_ref: str,
+    ctx: Context,
+) -> DocxStructureToolResult:
+    """Inspect bounded DOCX structure, safe anchors, flags, and preconditions."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="inspect_docx_structure",
+        operation=lambda runtime, request_id: DocxStructureToolResult(
+            **inspect_authorized_docx_structure(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="docx_structure",
+    )
+
+
+@mcp_server.tool()
+def edit_source_docx(
+    source_id: str,
+    artifact_ref: str,
+    required_version: str,
+    required_content_hash: str,
+    operations: list[DocxEditOperation],
+    ctx: Context,
+    approval_reference: str = "",
+) -> DocxEditToolResult:
+    """Apply bounded native OOXML edits to the same governed Drive artifact."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="edit_source_docx",
+        operation=lambda runtime, request_id: DocxEditToolResult(
+            **edit_authorized_source_docx(
+                mutation_policy=runtime.mutation_policy,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                required_version=required_version,
+                required_content_hash=required_content_hash,
+                operations=operations,
+                approval_reference=approval_reference,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="docx",
+        approval_reference=ContentMutationPolicy.normalized_approval_reference(approval_reference),
+        artifact_version=lambda result: result.version,
+        asset_refs=[
+            operation.asset_ref
+            for operation in operations
+            if hasattr(operation, "asset_ref")
+        ],
+    )
+
+
+@mcp_server.tool()
+def validate_docx_structure(
+    source_id: str,
+    artifact_ref: str,
+    requirements: DocxRequirements,
+    ctx: Context,
+    expected_version: str | None = None,
+) -> DocxValidationToolResult:
+    """Run bounded structural checks against the active DOCX artifact."""
+
+    return _execute_tool(
+        ctx=ctx,
+        action="validate_docx_structure",
+        operation=lambda runtime, request_id: DocxValidationToolResult(
+            **validate_authorized_docx_structure(
+                registry=runtime.registry,
+                source_policy=runtime.source_policy,
+                workspace_adapter=runtime.workspace_adapter,
+                reference_codec=_reference_codec(runtime),
+                source_id=source_id,
+                artifact_ref=artifact_ref,
+                requirements=requirements,
+                expected_version=expected_version,
+            ).model_dump(),
+            request_id=request_id,
+        ),
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="docx_quality",
     )
 
 

@@ -75,3 +75,32 @@ def test_sheet_reference_is_opaque_and_bound_to_source_and_spreadsheet():
         )
 
     assert wrong_artifact.value.code == "spreadsheet_sheet_reference_invalid"
+
+
+def test_asset_reference_binds_source_artifact_and_mime():
+    codec = ArtifactReferenceCodec.for_testing()
+    reference = codec.encode_asset(
+        source_id="career_ops", artifact_id="asset_123456", mime_type="image/svg+xml"
+    )
+    assert "asset_123456" not in reference
+    assert codec.decode_asset(reference, source_id="career_ops") == (
+        "asset_123456", "image/svg+xml"
+    )
+    with pytest.raises(WorkspaceAdapterError):
+        codec.decode_asset(reference, source_id="other_source")
+
+
+def test_docx_anchor_is_opaque_and_artifact_bound():
+    codec = ArtifactReferenceCodec.for_testing()
+    anchor = codec.encode_docx_anchor(
+        source_id="career_ops", artifact_id="docx_123456",
+        part="word/document.xml", kind="paragraph", indexes=[3]
+    )
+    assert "document.xml" not in anchor
+    assert codec.decode_docx_anchor(
+        anchor, source_id="career_ops", artifact_id="docx_123456"
+    ) == ("word/document.xml", "paragraph", (3,))
+    with pytest.raises(WorkspaceAdapterError):
+        codec.decode_docx_anchor(
+            anchor, source_id="career_ops", artifact_id="docx_other"
+        )

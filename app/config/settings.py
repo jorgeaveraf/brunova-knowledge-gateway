@@ -32,6 +32,9 @@ class Settings:
     agent_signal_prefix: str = "agent-signals/items/"
     agent_signal_claim_lease_seconds: int = 1800
     agent_signal_completed_retention_days: int = 30
+    workspace_asset_staging_bucket: str = ""
+    workspace_asset_staging_prefix: str = "gateway-assets/"
+    workspace_asset_url_ttl_seconds: int = 300
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -104,6 +107,10 @@ class Settings:
             or "agent-signals/items/",
             _positive_environment_int("AGENT_SIGNAL_CLAIM_LEASE_SECONDS", 1800),
             _positive_environment_int("AGENT_SIGNAL_COMPLETED_RETENTION_DAYS", 30),
+            os.getenv("WORKSPACE_ASSET_STAGING_BUCKET", "").strip(),
+            os.getenv("WORKSPACE_ASSET_STAGING_PREFIX", "").strip()
+            or "gateway-assets/",
+            _positive_environment_int("WORKSPACE_ASSET_URL_TTL_SECONDS", 300),
         )
 
 

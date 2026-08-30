@@ -6,6 +6,7 @@ import re
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.visual_assets import GoogleDocImageSummary
 
 
 class ArtifactReference(BaseModel):
@@ -123,6 +124,7 @@ class DocumentStructure(BaseModel):
     footers: list[SegmentSummary]
     sections: list[SectionSummary] = Field(default_factory=list)
     image_count: int
+    images: list[GoogleDocImageSummary] = Field(default_factory=list)
     document_style: dict[str, object]
     placeholders: list[str]
     total_characters: int

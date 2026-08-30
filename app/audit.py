@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -137,6 +138,9 @@ def emit_audit_record(
     principal_id: str | None = None,
     principal_type: str | None = None,
     include_active_principal: bool = True,
+    revision_id: str | None = None,
+    artifact_version: str | None = None,
+    asset_refs: list[str] | None = None,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -177,6 +181,15 @@ def emit_audit_record(
         event["proposal_id"] = proposal_id
     if approval_reference:
         event["approval_reference"] = approval_reference
+    if revision_id:
+        event["revision_id"] = revision_id[:256]
+    if artifact_version:
+        event["artifact_version"] = artifact_version[:128]
+    if asset_refs:
+        event["asset_ref_hashes"] = [
+            hashlib.sha256(value.encode()).hexdigest()[:16]
+            for value in asset_refs[:10]
+        ]
     if audience:
         event["audience"] = audience
     if created_resource_id:

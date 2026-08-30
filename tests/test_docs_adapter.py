@@ -8,10 +8,10 @@ from app.adapters.google_workspace.docs import (
     _bounded_text,
     _operation_requests,
 )
-from app.adapters.google_workspace.models import WorkspaceResource
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
-from app.config.settings import Settings
+from app.adapters.google_workspace.models import WorkspaceResource
 from app.artifact_refs import ArtifactReferenceCodec
+from app.config.settings import Settings
 from app.document_production import (
     CreateFooterOperation,
     CreateHeaderOperation,
@@ -27,6 +27,10 @@ from app.document_production import (
     TableCellStyleOperation,
     TextStyleOperation,
     UpdateTableCellOperation,
+)
+from app.visual_assets import (
+    InsertGoogleDocImageOperation,
+    ReplaceGoogleDocImageOperation,
 )
 
 
@@ -252,6 +256,8 @@ def test_inspect_structure_returns_revision_tabs_tables_segments_and_safe_styles
     assert result.headers[0].segment_id == "header-1"
     assert result.placeholders == ["{{x}}"]
     assert result.image_count == 1
+    assert result.images[0].kind == "inline"
+    assert "image-1" not in result.images[0].image_ref
     assert "secretField" not in result.document_style
 
 
@@ -322,6 +328,67 @@ def test_all_structured_requests_are_allowlisted_and_never_accept_raw_batch_upda
                 "replaceText": "new",
             }
         }
+    ]
+
+
+def test_docs_image_edit_uses_governed_uris_refs_and_revision_control():
+    update_request = Mock()
+    update_request.execute.return_value = {
+        "writeControl": {"requiredRevisionId": "revision-9"}
+    }
+    documents = Mock()
+    documents.batchUpdate.return_value = update_request
+    docs = Mock()
+    docs.documents.return_value = documents
+    adapter = GoogleDocsAdapter(
+        settings(), credentials_factory=Mock(return_value=object()), service_builder=Mock(return_value=docs)
+    )
+    resource = WorkspaceResource(
+        id="document_12345",
+        name="Controlled Doc",
+        mime_type="application/vnd.google-apps.document",
+        modified_time="",
+        drive_id=None,
+        ancestor_ids=("allowed_folder_123",),
+    )
+    operations = [
+        (
+            InsertGoogleDocImageOperation(
+                operation="insert_image", asset_ref="asset_opaque", index=8,
+                tab_ref="tab_opaque", width_points=72,
+            ),
+            "https://signed.example/insert",
+        ),
+        (
+            ReplaceGoogleDocImageOperation(
+                operation="replace_image", asset_ref="asset_opaque",
+                image_ref="doc_image_opaque",
+            ),
+            "https://signed.example/replace",
+        ),
+    ]
+    revision = adapter.edit_images(
+        resource,
+        required_revision_id="revision-8",
+        operations_with_uris=operations,
+        tab_id_resolver=lambda _: "tab-internal",
+        image_ref_resolver=lambda _: ("image-internal", "tab-internal"),
+    )
+    assert revision == "revision-9"
+    body = documents.batchUpdate.call_args.kwargs["body"]
+    assert body["writeControl"] == {"requiredRevisionId": "revision-8"}
+    assert body["requests"] == [
+        {"insertInlineImage": {
+            "uri": "https://signed.example/insert",
+            "location": {"index": 8, "tabId": "tab-internal"},
+            "objectSize": {"width": {"magnitude": 72.0, "unit": "PT"}},
+        }},
+        {"replaceImage": {
+            "imageObjectId": "image-internal",
+            "uri": "https://signed.example/replace",
+            "imageReplaceMethod": "CENTER_INSIDE",
+            "tabId": "tab-internal",
+        }},
     ]
 
 
