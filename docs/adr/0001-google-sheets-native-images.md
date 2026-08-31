@@ -1,14 +1,15 @@
-# ADR 0001: Google Sheets native image mutation is blocked
+# ADR 0001: Google Sheets native image mutation is unsupported
 
-Status: blocked, reviewed 2026-08-30
+Status: closed / not prioritized, accepted gap for v0.27.1, reviewed 2026-08-30
 
 ## Decision
 
 The Gateway does not expose Google Sheets image insert or replace operations in
 v0.27.1. It also rejects the architectural fallback of writing an `IMAGE()`
 formula backed by a transient signed URL. No release containing this increment
-may receive production traffic until a supported API path proves that the image
-remains native after both URL expiry and staging-object deletion.
+claims native visual-asset support for Sheets. This accepted gap does not block
+v0.27.1 production because Docs visual assets are independently validated and
+existing structured Sheets operations are unchanged.
 
 ## Evidence
 
@@ -43,10 +44,11 @@ Primary references:
 - XLSX export/re-import: does not perform a safe in-place mutation of the same
   native Sheet and risks loss of native semantics.
 
-## Unblocking condition
+## Revisit condition
 
 Revisit when Google adds a supported Sheets API request that accepts image bytes
 or a one-time fetch and exposes stable readback, or when Apps Script API
 executables support the Gateway's keyless delegated service-account identity.
 The production test must insert and replace an image, wait beyond URL expiry,
 delete staging, and then verify native readback on the same spreadsheet.
+This is not an active v0.27.1 workstream and requires a new prioritized increment.

@@ -14,7 +14,7 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.27.1 (staged, sin tráfico productivo):
+Arquitectura v0.27.1:
 
 Agents
 ↓
@@ -510,10 +510,12 @@ revisiones conservadas. El readback exige el mismo ID, package válido, hash
 exacto e invariantes solicitadas.
 
 Estas cinco tools nuevas permanecen **management-only en v0.27.1**, aunque las
-mutaciones mapean internamente a `update`. No se amplía automáticamente
-`dev_hq_delivery`: la edición binaria y el staging temporal requieren una fase
-productiva adicional antes de crear una sub-capability developer-visible. La
-auditoría registra principal, source, artifact opaco, operación, resultado,
+mutaciones mapean internamente a `update`. No se amplía `dev_hq_delivery`.
+La edición DOCX es una capacidad excepcional, acotada y management-only: no es
+el lifecycle preferido y no ha sido validada en producción. El lifecycle
+preferido continúa siendo Office → Google-native → operaciones nativas
+gobernadas. La auditoría registra principal, source, artifact opaco, operación,
+resultado,
 approval/authorization mode, revisión/versión y hashes truncados de asset refs;
 nunca binarios, SVG, texto DOCX completo ni URLs firmadas.
 
@@ -527,9 +529,10 @@ explícita de source por management.
 
 ## Google Sheets native images
 
-La auditoría de la API oficial bloquea la mutación de imágenes nativas en
-Sheets para el modelo de identidad actual. Sheets API v4 no expone creación ni
-reemplazo de imagen; sólo delete/position para objetos embebidos existentes.
+La auditoría de la API oficial concluye que la mutación de imágenes nativas en
+Sheets no está soportada para el modelo de identidad actual. Sheets API v4 no
+expone creación ni reemplazo de imagen; sólo delete/position para objetos
+embebidos existentes.
 Apps Script admite `insertImage(blob)` y `replace(blob)`, pero Google documenta
 que `scripts.run` no funciona con cuentas de servicio. El Gateway no introduce
 tokens humanos, service-account keys, RPCs privados ni automatización de UI.
@@ -537,8 +540,10 @@ tokens humanos, service-account keys, RPCs privados ni automatización de UI.
 `IMAGE(short-lived-url)` queda expresamente prohibido: no prueba persistencia
 después de expirar la URL y borrar staging. La decisión, alternativas rechazadas
 y condición de desbloqueo están en
-`docs/adr/0001-google-sheets-native-images.md`. Por este bloqueo, v0.27.1 se
-despliega sin tráfico y no se declara como incremento completo de Sheets.
+`docs/adr/0001-google-sheets-native-images.md`. Es un gap aceptado, cerrado y no
+priorizado para v0.27.1; no bloquea Google Docs Visual Assets ni las operaciones
+estructuradas de Sheets existentes. El Gateway no anuncia una capability visual
+parcial o simulada para Sheets.
 
 ## Artifact lifecycle
 
