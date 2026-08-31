@@ -381,6 +381,7 @@ class FakeSheetsAdapter:
 
     def __init__(self):
         self.operations = []
+        self.ranges = []
 
     def get_structure(self, resource):
         return {
@@ -406,10 +407,20 @@ class FakeSheetsAdapter:
                     "frozen_row_count": 0,
                     "frozen_column_count": 0,
                 },
+                {
+                    "sheet_id": "9",
+                    "title": "Team's Tasks",
+                    "index": 2,
+                    "row_count": 50,
+                    "column_count": 8,
+                    "frozen_row_count": 0,
+                    "frozen_column_count": 0,
+                },
             ],
         }
 
     def get_range(self, resource, *, range_name, value_render_option="FORMATTED_VALUE"):
+        self.ranges.append((resource.id, range_name, value_render_option))
         if value_render_option == "FORMULA":
             values = [["=SUM(A2:A10)"]]
         elif range_name == "Summary!A1:B1":
@@ -423,12 +434,15 @@ class FakeSheetsAdapter:
         )
 
     def apply_operations(
-        self, resource, *, operations, sheet_id_resolver, sheet_title_to_id
+        self, resource, *, operations, sheet_id_resolver, sheet_title_resolver
     ):
         for operation in operations:
             sheet_ref = getattr(operation, "sheet_ref", None)
             if sheet_ref:
-                assert sheet_id_resolver(sheet_ref) in (7, 8)
+                assert sheet_id_resolver(sheet_ref) in (7, 8, 9)
+                assert sheet_title_resolver(sheet_ref) in (
+                    "Summary", "Data", "Team's Tasks"
+                )
         self.operations.extend(operations)
 
 
@@ -1169,7 +1183,8 @@ def test_developer_spreadsheet_lifecycle_and_tool_filtering(monkeypatch):
                         "operations": [
                             {
                                 "operation": "set_values",
-                                "range": "Summary!A1:B1",
+                                "sheet_ref": sheet_ref,
+                                "range": "A1:B1",
                                 "values": [["Name", "=SUM(A2:A10)"]],
                                 "value_input_option": "USER_ENTERED",
                             },
@@ -1260,7 +1275,10 @@ def test_management_spreadsheet_edit_requires_approval_and_enforces_mime_and_sco
     )
     operation = {
         "operation": "set_values",
-        "range": "Summary!A1:A1",
+        "sheet_ref": gateway_runtime.artifact_reference_codec.encode_sheet(
+            source_id="career_ops", artifact_id="spreadsheet_12345", sheet_id="7"
+        ),
+        "range": "A1:A1",
         "values": [["Safe"]],
     }
 
@@ -1313,7 +1331,10 @@ def test_developer_spreadsheet_edit_denies_capability_and_source_escalation(monk
     )
     operation = {
         "operation": "clear_range",
-        "range": "Summary!A1:A1",
+        "sheet_ref": gateway_runtime.artifact_reference_codec.encode_sheet(
+            source_id="career_ops", artifact_id="spreadsheet_12345", sheet_id="7"
+        ),
+        "range": "A1:A1",
     }
 
     async def call_as(principal):
@@ -2158,9 +2179,16 @@ def test_mcp_lists_sources_and_filters_authorized_documents(monkeypatch):
 
 
 def test_mcp_retrieval_tools_apply_source_and_content_policies(monkeypatch):
-    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime())
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
     audit = Mock()
     monkeypatch.setattr(mcp_module, "emit_audit_record", audit)
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="spreadsheet_12345"
+    )
+    sheet_ref = gateway_runtime.artifact_reference_codec.encode_sheet(
+        source_id="career_ops", artifact_id="spreadsheet_12345", sheet_id="7"
+    )
 
     async def scenario():
         async with Client(mcp_module.mcp_server) as client:
@@ -2172,7 +2200,8 @@ def test_mcp_retrieval_tools_apply_source_and_content_policies(monkeypatch):
                 "retrieve_sheet_range",
                 {
                     "source_id": "career_ops",
-                    "spreadsheet_id": "spreadsheet_12345",
+                    "artifact_ref": artifact_ref,
+                    "sheet_ref": sheet_ref,
                     "range": "A1:A2",
                 },
             )
@@ -2184,10 +2213,242 @@ def test_mcp_retrieval_tools_apply_source_and_content_policies(monkeypatch):
     assert document.structured_content["source"]["id"] == "career_ops"
     assert sheet.is_error is False
     assert sheet.structured_content["values"] == [["Header"], ["Value"]]
+    assert sheet.structured_content["artifact_ref"] == artifact_ref
+    assert sheet.structured_content["sheet_ref"] == sheet_ref
+    assert "spreadsheet_id" not in sheet.structured_content
+    assert gateway_runtime.sheets_adapter.ranges[-1][1] == "'Summary'!A1:A2"
     assert any(
         call.kwargs.get("source_classification") == "management_only"
         for call in audit.call_args_list
     )
+
+
+def test_sheet_range_contract_selects_primary_secondary_and_quoted_title(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="career_ops", artifact_id="spreadsheet_12345"
+    )
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            tools = await client.list_tools()
+            structure = await client.call_tool(
+                "inspect_spreadsheet_structure",
+                {"source_id": "career_ops", "artifact_ref": artifact_ref},
+            )
+            refs = {
+                sheet["title"]: sheet["sheet_ref"]
+                for sheet in structure.structured_content["sheets"]
+            }
+            reads = []
+            for title in ("Summary", "Data", "Team's Tasks"):
+                reads.append(
+                    await client.call_tool(
+                        "retrieve_sheet_range",
+                        {
+                            "source_id": "career_ops",
+                            "artifact_ref": artifact_ref,
+                            "sheet_ref": refs[title],
+                            "range": "A1:B2",
+                        },
+                    )
+                )
+            return tools, structure, reads
+
+    tools, structure, reads = run(scenario())
+
+    assert structure.is_error is False
+    assert all(result.is_error is False for result in reads)
+    assert [item[1] for item in gateway_runtime.sheets_adapter.ranges[-3:]] == [
+        "'Summary'!A1:B2",
+        "'Data'!A1:B2",
+        "'Team''s Tasks'!A1:B2",
+    ]
+    tool = next(item for item in tools.tools if item.name == "retrieve_sheet_range")
+    assert set(tool.input_schema["required"]) >= {
+        "source_id", "artifact_ref", "sheet_ref", "range"
+    }
+    assert "spreadsheet_id" not in tool.input_schema["properties"]
+
+
+def test_sheet_range_rejects_cross_artifact_cross_source_stale_and_invalid_refs(
+    monkeypatch,
+):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    codec = gateway_runtime.artifact_reference_codec
+    artifact_ref = codec.encode(
+        source_id="career_ops", artifact_id="spreadsheet_12345"
+    )
+    rejected_refs = [
+        codec.encode_sheet(
+            source_id="career_ops", artifact_id="spreadsheet_other", sheet_id="7"
+        ),
+        codec.encode_sheet(
+            source_id="another_source", artifact_id="spreadsheet_12345", sheet_id="7"
+        ),
+        codec.encode_sheet(
+            source_id="career_ops", artifact_id="spreadsheet_12345", sheet_id="999"
+        ),
+        "sheet_invalid",
+    ]
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            results = []
+            edits = []
+            for sheet_ref in rejected_refs:
+                results.append(
+                    await client.call_tool(
+                        "retrieve_sheet_range",
+                        {
+                            "source_id": "career_ops",
+                            "artifact_ref": artifact_ref,
+                            "sheet_ref": sheet_ref,
+                            "range": "A1:B2",
+                        },
+                    )
+                )
+                edits.append(
+                    await client.call_tool(
+                        "edit_source_spreadsheet",
+                        {
+                            "source_id": "career_ops",
+                            "artifact_ref": artifact_ref,
+                            "operations": [
+                                {
+                                    "operation": "set_values",
+                                    "sheet_ref": sheet_ref,
+                                    "range": "A1:A1",
+                                    "values": [["value"]],
+                                }
+                            ],
+                            "approval_reference": "sheet-ref-rejection-test",
+                        },
+                    )
+                )
+            qualified_range = await client.call_tool(
+                "retrieve_sheet_range",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": artifact_ref,
+                    "sheet_ref": codec.encode_sheet(
+                        source_id="career_ops",
+                        artifact_id="spreadsheet_12345",
+                        sheet_id="7",
+                    ),
+                    "range": "Summary!A1:B2",
+                },
+            )
+            return results, edits, qualified_range
+
+    results, edits, qualified_range = run(scenario())
+
+    assert all(result.is_error is True for result in results + edits)
+    assert all(
+        "spreadsheet_sheet_reference_invalid" in result.content[0].text
+        for result in results + edits
+    )
+    assert qualified_range.is_error is True
+    assert "spreadsheet_range_invalid" in qualified_range.content[0].text
+
+
+def test_hq_client_developer_reads_and_updates_secondary_sheet_by_ref(monkeypatch):
+    base_runtime = runtime()
+    hq_source = base_runtime.registry.get("career_ops").model_copy(
+        update={"id": "hq_client", "name": "HQ"}
+    )
+    hq_registry = SourceRegistry(
+        SourceRegistryDocument(version=1, sources=(hq_source,))
+    )
+    hq_policy = SourceAccessPolicy(base_runtime.settings, hq_registry)
+    gateway_runtime = replace(
+        base_runtime,
+        registry=hq_registry,
+        source_policy=hq_policy,
+        mutation_policy=ContentMutationPolicy(hq_registry, hq_policy),
+    )
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    principal = Principal(
+        id="developer_hq_client",
+        type="developer",
+        status="active",
+        providers=ProviderScope(workspace=True),
+        sources=frozenset({"hq_client"}),
+        capabilities=CapabilityScope(read=True, update=True),
+    )
+    artifact_ref = gateway_runtime.artifact_reference_codec.encode(
+        source_id="hq_client", artifact_id="spreadsheet_12345"
+    )
+
+    async def scenario():
+        token = bind_principal(principal)
+        try:
+            async with Client(mcp_module.mcp_server) as client:
+                structure = await client.call_tool(
+                    "inspect_spreadsheet_structure",
+                    {"source_id": "hq_client", "artifact_ref": artifact_ref},
+                )
+                secondary_ref = next(
+                    sheet["sheet_ref"]
+                    for sheet in structure.structured_content["sheets"]
+                    if sheet["title"] == "Data"
+                )
+                read = await client.call_tool(
+                    "retrieve_sheet_range",
+                    {
+                        "source_id": "hq_client",
+                        "artifact_ref": artifact_ref,
+                        "sheet_ref": secondary_ref,
+                        "range": "A1:B2",
+                    },
+                )
+                update = await client.call_tool(
+                    "edit_source_spreadsheet",
+                    {
+                        "source_id": "hq_client",
+                        "artifact_ref": artifact_ref,
+                        "operations": [
+                            {
+                                "operation": "set_values",
+                                "sheet_ref": secondary_ref,
+                                "range": "A1:B1",
+                                "values": [["Name", "Value"]],
+                            },
+                            {
+                                "operation": "append_rows",
+                                "sheet_ref": secondary_ref,
+                                "range": "A1:B20",
+                                "values": [["Item", 1]],
+                            },
+                            {
+                                "operation": "clear_range",
+                                "sheet_ref": secondary_ref,
+                                "range": "B2:B3",
+                            },
+                            {
+                                "operation": "format_range",
+                                "sheet_ref": secondary_ref,
+                                "range": "A1:B2",
+                                "bold": True,
+                            },
+                        ],
+                    },
+                )
+                return structure, read, update
+        finally:
+            reset_principal(token)
+
+    structure, read, update = run(scenario())
+
+    assert structure.is_error is False
+    assert read.is_error is False
+    assert read.structured_content["source"]["id"] == "hq_client"
+    assert update.is_error is False
+    assert update.structured_content["applied_operations"] == 4
+    assert gateway_runtime.sheets_adapter.ranges[-1][1] == "'Data'!A1:B2"
+    assert all(operation.range.split("!")[-1] == operation.range for operation in gateway_runtime.sheets_adapter.operations[-4:])
 
 
 def test_mcp_operation_history_filters_limits_and_audits(monkeypatch):

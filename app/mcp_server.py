@@ -21,8 +21,8 @@ from app.adapters.google_workspace.models import (
     ArtifactMetadata,
     DriveFile,
     GoogleDocContent,
-    SheetRangeContent,
     SourceArtifactMutationResult,
+    SourceMetadata,
 )
 from app.adapters.hubspot.mcp_client import account_metadata_from_result
 from app.adapters.hubspot.models import HubSpotToolDescriptor, HubSpotToolResult
@@ -232,6 +232,15 @@ class SpreadsheetEditToolResult(SpreadsheetEditResult):
 
 class SpreadsheetQualityToolResult(SpreadsheetQualityResult):
     request_id: str
+
+
+class SpreadsheetRangeToolResult(BaseModel):
+    artifact_ref: str
+    sheet_ref: str
+    range: str
+    values: list[list[object]]
+    request_id: str
+    source: SourceMetadata | None = None
 
 
 class DocumentTabInspectionToolResult(DocumentTabInspectionResult):
@@ -1969,30 +1978,42 @@ def retrieve_document(
 @mcp_server.tool()
 def retrieve_sheet_range(
     source_id: str,
-    spreadsheet_id: str,
+    artifact_ref: str,
+    sheet_ref: str,
     range: str,
     ctx: Context,
-) -> SheetRangeContent:
-    """Retrieve a bounded range from a sheet in the selected source."""
+) -> SpreadsheetRangeToolResult:
+    """Read a bounded local A1 range from an opaque spreadsheet sheet_ref."""
 
-    def operation(runtime: KnowledgeRuntime, request_id: str) -> SheetRangeContent:
+    def operation(
+        runtime: KnowledgeRuntime, request_id: str
+    ) -> SpreadsheetRangeToolResult:
         _, sheet = retrieve_authorized_sheet_range(
             registry=runtime.registry,
             source_policy=runtime.source_policy,
             workspace_adapter=runtime.workspace_adapter,
             sheets_adapter=runtime.sheets_adapter,
+            reference_codec=_reference_codec(runtime),
             source_id=source_id,
-            spreadsheet_id=spreadsheet_id,
+            artifact_ref=artifact_ref,
+            sheet_ref=sheet_ref,
             range_name=range,
         )
-        return sheet.model_copy(update={"request_id": request_id})
+        return SpreadsheetRangeToolResult(
+            artifact_ref=artifact_ref,
+            sheet_ref=sheet_ref,
+            range=sheet.range,
+            values=sheet.values,
+            request_id=request_id,
+            source=sheet.source,
+        )
 
     return _execute_tool(
         ctx=ctx,
         action="retrieve_sheet_range",
         operation=operation,
         source_id=source_id,
-        resource_id=spreadsheet_id,
+        resource_id=artifact_ref,
         resource_type="google_sheet",
     )
 

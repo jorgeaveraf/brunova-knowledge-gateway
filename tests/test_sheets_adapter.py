@@ -147,23 +147,55 @@ def test_sheets_adapter_applies_values_formula_append_and_clear():
         _settings(), credentials_factory=Mock(return_value=object()), service_builder=Mock(return_value=service)
     )
     operations = [
-        SetValuesOperation(operation="set_values", range="Summary!A1:B1", values=[["Total", "=SUM(A2:A10)"]], value_input_option="USER_ENTERED"),
-        AppendRowsOperation(operation="append_rows", range="Summary!A1:B20", values=[["A", 1]]),
-        ClearRangeOperation(operation="clear_range", range="Summary!B2:B3"),
+        SetValuesOperation(operation="set_values", sheet_ref="summary_ref", range="A1:B1", values=[["Total", "=SUM(A2:A10)"]], value_input_option="USER_ENTERED"),
+        AppendRowsOperation(operation="append_rows", sheet_ref="summary_ref", range="A1:B20", values=[["A", 1]]),
+        ClearRangeOperation(operation="clear_range", sheet_ref="summary_ref", range="B2:B3"),
     ]
 
     adapter.apply_operations(
-        _resource(), operations=operations, sheet_id_resolver=lambda _: 7, sheet_title_to_id={"Summary": 7}
+        _resource(), operations=operations, sheet_id_resolver=lambda _: 7, sheet_title_resolver=lambda _: "Summary"
     )
 
     values.update.assert_called_once_with(
-        spreadsheetId="spreadsheet_12345", range="Summary!A1:B1", valueInputOption="USER_ENTERED", body={"values": [["Total", "=SUM(A2:A10)"]]}
+        spreadsheetId="spreadsheet_12345", range="'Summary'!A1:B1", valueInputOption="USER_ENTERED", body={"values": [["Total", "=SUM(A2:A10)"]]}
     )
     values.append.assert_called_once_with(
-        spreadsheetId="spreadsheet_12345", range="Summary!A1:B20", valueInputOption="RAW", insertDataOption="INSERT_ROWS", body={"values": [["A", 1]]}
+        spreadsheetId="spreadsheet_12345", range="'Summary'!A1:B20", valueInputOption="RAW", insertDataOption="INSERT_ROWS", body={"values": [["A", 1]]}
     )
     values.clear.assert_called_once_with(
-        spreadsheetId="spreadsheet_12345", range="Summary!B2:B3", body={}
+        spreadsheetId="spreadsheet_12345", range="'Summary'!B2:B3", body={}
+    )
+
+
+def test_sheets_adapter_qualifies_local_range_and_escapes_sheet_title():
+    values = Mock()
+    spreadsheets = Mock()
+    spreadsheets.values.return_value = values
+    service = Mock()
+    service.spreadsheets.return_value = spreadsheets
+    adapter = GoogleSheetsAdapter(
+        _settings(),
+        credentials_factory=Mock(return_value=object()),
+        service_builder=Mock(return_value=service),
+    )
+
+    adapter.apply_operations(
+        _resource(),
+        operations=[
+            ClearRangeOperation(
+                operation="clear_range",
+                sheet_ref="tasks_ref",
+                range="A1:G30",
+            )
+        ],
+        sheet_id_resolver=lambda _: 9,
+        sheet_title_resolver=lambda _: "Team's Tasks",
+    )
+
+    values.clear.assert_called_once_with(
+        spreadsheetId="spreadsheet_12345",
+        range="'Team''s Tasks'!A1:G30",
+        body={},
     )
 
 
@@ -181,12 +213,12 @@ def test_sheets_adapter_applies_sheet_dimension_and_basic_format_operations():
         DeleteRowsOperation(operation="delete_rows", sheet_ref="sheet_ref", start_index=2, count=1),
         InsertColumnsOperation(operation="insert_columns", sheet_ref="sheet_ref", start_index=1, count=2),
         DeleteColumnsOperation(operation="delete_columns", sheet_ref="sheet_ref", start_index=1, count=1),
-        FormatRangeOperation(operation="format_range", range="Summary!A1:B2", bold=True, italic=True, font_size=12, horizontal_alignment="CENTER", number_format_type="NUMBER", number_format_pattern="0.00", background_color="#112233", text_color="#FFFFFF"),
+        FormatRangeOperation(operation="format_range", sheet_ref="sheet_ref", range="A1:B2", bold=True, italic=True, font_size=12, horizontal_alignment="CENTER", number_format_type="NUMBER", number_format_pattern="0.00", background_color="#112233", text_color="#FFFFFF"),
         DeleteSheetOperation(operation="delete_sheet", sheet_ref="sheet_ref"),
     ]
 
     adapter.apply_operations(
-        _resource(), operations=operations, sheet_id_resolver=lambda _: 7, sheet_title_to_id={"Summary": 7}
+        _resource(), operations=operations, sheet_id_resolver=lambda _: 7, sheet_title_resolver=lambda _: "Summary"
     )
 
     spreadsheets.batchUpdate.assert_called_once()

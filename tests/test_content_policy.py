@@ -48,7 +48,7 @@ def test_spreadsheet_mutation_policy_accepts_bounded_values_and_dimensions():
     _validate(
         [
             SetValuesOperation(
-                operation="set_values", range="Summary!A1:B2", values=[[1, 2], [3, 4]]
+                operation="set_values", sheet_ref="sheet_ref", range="A1:B2", values=[[1, 2], [3, 4]]
             ),
             InsertRowsOperation(
                 operation="insert_rows", sheet_ref="sheet_ref", start_index=5, count=10
@@ -60,14 +60,14 @@ def test_spreadsheet_mutation_policy_accepts_bounded_values_and_dimensions():
 @pytest.mark.parametrize(
     ("operations", "code"),
     [
-        ([ClearRangeOperation(operation="clear_range", range="A:A")], "spreadsheet_range_invalid"),
+        ([ClearRangeOperation(operation="clear_range", sheet_ref="sheet_ref", range="A:A")], "spreadsheet_range_invalid"),
         (
             [
                 SetValuesOperation(
-                    operation="set_values", range="Summary!A1:J5", values=[[1] * 10 for _ in range(5)]
+                    operation="set_values", sheet_ref="sheet_ref", range="A1:J5", values=[[1] * 10 for _ in range(5)]
                 ),
                 SetValuesOperation(
-                    operation="set_values", range="Summary!A6:J10", values=[[1] * 10 for _ in range(5)]
+                    operation="set_values", sheet_ref="sheet_ref", range="A6:J10", values=[[1] * 10 for _ in range(5)]
                 ),
             ],
             "spreadsheet_cell_limit_exceeded",
@@ -82,12 +82,27 @@ def test_spreadsheet_mutation_policy_rejects_unbounded_payloads(operations, code
 
 def test_spreadsheet_mutation_policy_rejects_oversized_batch():
     operations = [
-        ClearRangeOperation(operation="clear_range", range="Summary!A1:A1")
+        ClearRangeOperation(operation="clear_range", sheet_ref="sheet_ref", range="A1:A1")
         for _ in range(SpreadsheetMutationPolicy.MAX_OPERATIONS + 1)
     ]
     with pytest.raises(WorkspaceAdapterError) as captured:
         _validate(operations)
     assert captured.value.code == "spreadsheet_operations_invalid"
+
+
+def test_spreadsheet_mutation_policy_rejects_sheet_title_in_local_range():
+    with pytest.raises(WorkspaceAdapterError) as captured:
+        _validate(
+            [
+                ClearRangeOperation(
+                    operation="clear_range",
+                    sheet_ref="sheet_ref",
+                    range="'Team''s Tasks'!A1:G30",
+                )
+            ]
+        )
+
+    assert captured.value.code == "spreadsheet_range_invalid"
 
 
 def test_spreadsheet_dimension_operation_is_bounded_by_schema():

@@ -163,11 +163,11 @@ class SpreadsheetMutationPolicy:
         for operation in operations:
             if hasattr(operation, "range"):
                 parsed = cls.parse_range(operation.range, max_cells=max_cells)
-                if parsed.sheet_title and parsed.sheet_title not in planned_titles:
+                if parsed.sheet_title:
                     raise WorkspaceAdapterError(
-                        "spreadsheet_sheet_not_found",
-                        "A range references a sheet that does not exist.",
-                        404,
+                        "spreadsheet_range_invalid",
+                        "Use a local bounded A1 range and select the sheet with sheet_ref.",
+                        422,
                     )
                 if operation.operation in {"set_values", "append_rows"}:
                     rows = operation.values

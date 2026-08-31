@@ -409,7 +409,9 @@ Tools disponibles:
 - `list_source_documents`: documentos autorizados de una fuente, con filtro
   opcional por nombre;
 - `retrieve_document`: lectura source-scoped de Google Docs;
-- `retrieve_sheet_range`: lectura source-scoped y acotada de Google Sheets.
+- `retrieve_sheet_range`: lectura source-scoped mediante
+  `source_id + artifact_ref + sheet_ref + range` local y acotado; no acepta ni
+  requiere IDs crudos de Drive/Spreadsheet.
 
 Los tools llaman exclusivamente operaciones de `app/knowledge.py`; no acceden a
 Google APIs directamente. El `request_id` de MCP se usa como correlation ID y
@@ -570,6 +572,12 @@ La producción de Sheets exige un `artifact_ref` source-bound y MIME nativo
 `application/vnd.google-apps.spreadsheet`. XLSX/XLSM deben convertirse antes de
 editarse. Todos los rangos deben ser A1 explícitos y cerrados; no se aceptan
 rangos completos como `A:A`, filas abiertas ni whole-sheet writes implícitos.
+Las operaciones por rango (`retrieve_sheet_range`, `set_values`, `append_rows`,
+`clear_range` y `format_range`) seleccionan la tab exclusivamente con un
+`sheet_ref` emitido por `inspect_spreadsheet_structure` y ligado al mismo
+`source_id` y `artifact_ref`. El rango permanece local, por ejemplo `A1:G30`;
+el nombre de tab y el A1 calificado requerido por Google se construyen sólo de
+forma interna después de validar la referencia.
 
 `set_values` y `append_rows` usan `RAW` por defecto. `USER_ENTERED` debe pedirse
 explícitamente para interpretar fórmulas como `=SUM(A1:A10)`. El formato básico

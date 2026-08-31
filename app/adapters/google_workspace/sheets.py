@@ -139,7 +139,7 @@ class GoogleSheetsAdapter:
         *,
         operations: list[SpreadsheetEditOperation],
         sheet_id_resolver: Callable[[str], int],
-        sheet_title_to_id: dict[str, int],
+        sheet_title_resolver: Callable[[str], str],
     ) -> None:
         """Execute only modeled operations; raw Sheets requests are never accepted."""
 
@@ -169,7 +169,10 @@ class GoogleSheetsAdapter:
                         .values()
                         .update(
                             spreadsheetId=resource.id,
-                            range=operation.range,
+                            range=_qualified_range(
+                                sheet_title_resolver(operation.sheet_ref),
+                                operation.range,
+                            ),
                             valueInputOption=operation.value_input_option,
                             body={"values": operation.values},
                         )
@@ -182,7 +185,10 @@ class GoogleSheetsAdapter:
                         .values()
                         .append(
                             spreadsheetId=resource.id,
-                            range=operation.range,
+                            range=_qualified_range(
+                                sheet_title_resolver(operation.sheet_ref),
+                                operation.range,
+                            ),
                             valueInputOption=operation.value_input_option,
                             insertDataOption="INSERT_ROWS",
                             body={"values": operation.values},
@@ -196,7 +202,10 @@ class GoogleSheetsAdapter:
                         .values()
                         .clear(
                             spreadsheetId=resource.id,
-                            range=operation.range,
+                            range=_qualified_range(
+                                sheet_title_resolver(operation.sheet_ref),
+                                operation.range,
+                            ),
                             body={},
                         )
                         .execute()
@@ -206,7 +215,6 @@ class GoogleSheetsAdapter:
                         _structural_request(
                             operation,
                             sheet_id_resolver=sheet_id_resolver,
-                            sheet_title_to_id=sheet_title_to_id,
                             max_cells=self.max_cells,
                         )
                     )
@@ -242,7 +250,6 @@ def _structural_request(
     operation: SpreadsheetEditOperation,
     *,
     sheet_id_resolver: Callable[[str], int],
-    sheet_title_to_id: dict[str, int],
     max_cells: int,
 ) -> dict[str, Any]:
     if operation.operation == "create_sheet":
@@ -291,17 +298,7 @@ def _structural_request(
         parsed = SpreadsheetMutationPolicy.parse_range(
             operation.range, max_cells=max_cells
         )
-        sheet_id = (
-            sheet_title_to_id.get(parsed.sheet_title)
-            if parsed.sheet_title
-            else next(iter(sheet_title_to_id.values()))
-        )
-        if sheet_id is None:
-            raise WorkspaceAdapterError(
-                "spreadsheet_sheet_not_found",
-                "A formatting range references a sheet that does not exist.",
-                404,
-            )
+        sheet_id = sheet_id_resolver(operation.sheet_ref)
         cell: dict[str, Any] = {}
         fields: list[str] = []
         text_format: dict[str, Any] = {}
@@ -351,6 +348,13 @@ def _structural_request(
     raise WorkspaceAdapterError(
         "spreadsheet_operation_invalid", "Unsupported spreadsheet operation.", 422
     )
+
+
+def _qualified_range(sheet_title: str, local_range: str) -> str:
+    """Build provider A1 only after an opaque sheet_ref has been authorized."""
+
+    escaped_title = sheet_title.replace("'", "''")
+    return f"'{escaped_title}'!{local_range}"
 
 
 def _rgb(value: str) -> dict[str, float]:

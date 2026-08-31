@@ -30,23 +30,25 @@ class SpreadsheetStructure(BaseModel):
     concurrency_control: Literal["none"] = "none"
 
 
-class SetValuesOperation(BaseModel):
+class RangeOperation(BaseModel):
+    sheet_ref: str = Field(min_length=1)
+    range: str
+
+
+class SetValuesOperation(RangeOperation):
     operation: Literal["set_values"]
-    range: str
     values: list[list[SpreadsheetCellValue]]
     value_input_option: Literal["RAW", "USER_ENTERED"] = "RAW"
 
 
-class AppendRowsOperation(BaseModel):
+class AppendRowsOperation(RangeOperation):
     operation: Literal["append_rows"]
-    range: str
     values: list[list[SpreadsheetCellValue]]
     value_input_option: Literal["RAW", "USER_ENTERED"] = "RAW"
 
 
-class ClearRangeOperation(BaseModel):
+class ClearRangeOperation(RangeOperation):
     operation: Literal["clear_range"]
-    range: str
 
 
 class CreateSheetOperation(BaseModel):
@@ -90,9 +92,8 @@ class DeleteColumnsOperation(DimensionOperation):
     operation: Literal["delete_columns"]
 
 
-class FormatRangeOperation(BaseModel):
+class FormatRangeOperation(RangeOperation):
     operation: Literal["format_range"]
-    range: str
     bold: bool | None = None
     italic: bool | None = None
     font_size: int | None = Field(default=None, ge=1, le=100)
@@ -109,7 +110,7 @@ class FormatRangeOperation(BaseModel):
         if not any(
             value is not None
             for name, value in self.__dict__.items()
-            if name not in {"operation", "range", "number_format_pattern"}
+            if name not in {"operation", "sheet_ref", "range", "number_format_pattern"}
         ):
             raise ValueError("At least one formatting property is required.")
         if self.number_format_pattern and not self.number_format_type:

@@ -34,7 +34,7 @@ from app.knowledge import (
     list_registered_sources,
     registered_source,
     retrieve_authorized_document,
-    retrieve_authorized_sheet_range,
+    retrieve_authorized_sheet_range_by_id,
 )
 from app.mcp_server import mcp_http_app, mcp_server
 from app.middleware.authentication import GatewayAuthenticationMiddleware
@@ -542,7 +542,7 @@ def source_sheet_range(
     request.state.source_id = source_id
     source = registered_source(registry, source_id)
     request.state.classification = source.classification.value
-    _, result = retrieve_authorized_sheet_range(
+    _, result = retrieve_authorized_sheet_range_by_id(
         registry=registry,
         source_policy=source_policy,
         workspace_adapter=workspace_adapter,
