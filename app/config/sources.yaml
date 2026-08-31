@@ -103,13 +103,13 @@ sources:
     owner:
       - Jorge
       - Nat
-    status: active
+    status: disabled
     source_type: knowledge_source
     capabilities:
-      read: true
+      read: false
       create: false
       update: false
-      move: true
+      move: false
       delete: false
       share: false
       convert: false
