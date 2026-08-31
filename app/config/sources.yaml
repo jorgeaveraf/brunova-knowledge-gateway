@@ -94,6 +94,25 @@ sources:
       delete: true
       share: false
       convert: true
+  - id: otw_closeout
+    name: OTW — Closeout
+    system: google_workspace
+    location_type: shared_drive
+    location_id: 0AOT1G5_mghoWUk9PVA
+    classification: management_only
+    owner:
+      - Jorge
+      - Nat
+    status: active
+    source_type: knowledge_source
+    capabilities:
+      read: true
+      create: false
+      update: false
+      move: true
+      delete: false
+      share: false
+      convert: false
   - id: workspace_validation
     name: Brunova Gateway Validation Sandbox
     system: google_workspace
