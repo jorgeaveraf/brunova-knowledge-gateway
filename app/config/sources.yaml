@@ -113,6 +113,25 @@ sources:
       delete: false
       share: false
       convert: false
+  - id: otw_legacy_archive
+    name: OTW — Former Relationship Archive
+    system: google_workspace
+    location_type: folder
+    location_id: 1Q8k0__2SwmNbhSN1mHB4TQLYWcA1L6uG
+    classification: management_only
+    owner:
+      - Jorge
+      - Nat
+    status: active
+    source_type: archive_destination
+    capabilities:
+      read: false
+      create: false
+      update: false
+      move: true
+      delete: false
+      share: false
+      convert: false
   - id: workspace_validation
     name: Brunova Gateway Validation Sandbox
     system: google_workspace
