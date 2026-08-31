@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 import sys
 from contextlib import contextmanager
@@ -26,6 +27,7 @@ MAX_ASSET_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 MAX_RENDER_DIMENSION = 4096
 _SVG_DIMENSION = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)")
+logger = logging.getLogger(__name__)
 
 
 class VisualAssetInspection(BaseModel):
@@ -75,7 +77,7 @@ class ReplaceGoogleDocImageOperation(BaseModel):
     operation: Literal["replace_image"]
     asset_ref: str
     image_ref: str
-    replace_method: Literal["CENTER_CROP", "CENTER_INSIDE"] = "CENTER_INSIDE"
+    replace_method: Literal["CENTER_CROP"] = "CENTER_CROP"
 
 
 GoogleDocImageOperation = Annotated[
@@ -217,7 +219,7 @@ def sanitize_svg(content: bytes) -> bytes:
         raise WorkspaceAdapterError(
             "visual_asset_svg_invalid", "The asset root element is not SVG.", 422
         )
-    forbidden = {"script", "style", "foreignObject", "iframe", "object", "embed"}
+    forbidden = {"script", "foreignObject", "iframe", "object", "embed"}
     for element in root.iter():
         local_name = element.tag.rsplit("}", 1)[-1]
         if local_name in forbidden:
@@ -227,25 +229,61 @@ def sanitize_svg(content: bytes) -> bytes:
         for attribute, value in element.attrib.items():
             name = attribute.rsplit("}", 1)[-1].casefold()
             normalized = value.strip().casefold()
-            if name.startswith("on") or "url(" in normalized:
+            if name.startswith("on") or _unsafe_css(normalized):
                 raise WorkspaceAdapterError(
                     "visual_asset_svg_unsafe", "The SVG contains active or linked content.", 422
                 )
-            if name == "href" and not normalized.startswith(("#", "data:image/")):
+            if name == "href" and not normalized.startswith("#"):
                 raise WorkspaceAdapterError(
                     "visual_asset_svg_unsafe", "The SVG contains an external reference.", 422
                 )
+        if local_name == "style" and _unsafe_css(element.text or ""):
+            raise WorkspaceAdapterError(
+                "visual_asset_svg_unsafe", "The SVG contains active or linked CSS.", 422
+            )
     return SafeElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _unsafe_css(value: str) -> bool:
+    normalized = re.sub(r"\s+", "", value).casefold()
+    if any(rule != "media" for rule in re.findall(r"@([a-z-]+)", normalized)):
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "url(",
+            "\\",
+            "/*",
+            "*/",
+            "expression(",
+            "javascript:",
+            "http:",
+            "https:",
+            "data:",
+            "//",
+            "behavior:",
+            "-moz-binding",
+        )
+    )
 
 
 class TransientAssetPublisher:
     """Publish short-lived signed image URIs and always remove staging objects."""
 
-    def __init__(self, *, bucket_name: str, prefix: str, ttl_seconds: int, client=None):
+    def __init__(
+        self,
+        *,
+        bucket_name: str,
+        prefix: str,
+        ttl_seconds: int,
+        client=None,
+        signing_credentials=None,
+    ):
         self._bucket_name = bucket_name
         self._prefix = prefix.strip("/") + "/"
         self._ttl_seconds = ttl_seconds
         self._client = client
+        self._signing_credentials = signing_credentials
 
     @contextmanager
     def signed_uri(self, image: AssetImage):
@@ -261,11 +299,17 @@ class TransientAssetPublisher:
             f"{self._prefix}{uuid4().hex}.{extension}"
         )
         try:
-            blob.upload_from_string(image.content, content_type=image.mime_type)
+            blob.cache_control = "private, max-age=0, no-store"
+            blob.upload_from_string(
+                image.content,
+                content_type=image.mime_type,
+                if_generation_match=0,
+            )
             uri = blob.generate_signed_url(
                 version="v4",
                 expiration=timedelta(seconds=self._ttl_seconds),
                 method="GET",
+                credentials=self._signing_credentials,
             )
             if len(uri) > 2048:
                 raise WorkspaceAdapterError(
@@ -275,8 +319,13 @@ class TransientAssetPublisher:
         finally:
             body_failed = sys.exc_info()[0] is not None
             try:
-                blob.delete()
+                blob.delete(if_generation_match=blob.generation)
             except Exception as error:
+                logger.error(
+                    "visual_asset_staging_cleanup_failed",
+                    extra={"bucket": self._bucket_name},
+                    exc_info=error,
+                )
                 if not body_failed:
                     raise WorkspaceAdapterError(
                         "visual_asset_cleanup_failed",

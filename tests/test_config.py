@@ -65,3 +65,18 @@ def test_non_positive_content_limits_are_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="must be positive"):
         Settings.from_environment()
+
+
+@pytest.mark.parametrize("ttl", [299, 901])
+def test_asset_signed_url_ttl_is_bounded(monkeypatch, ttl):
+    monkeypatch.setenv("WORKSPACE_DELEGATED_USER", "reader@example.com")
+    monkeypatch.setenv(
+        "WORKSPACE_SERVICE_ACCOUNT_EMAIL", "gateway@project.iam.gserviceaccount.com"
+    )
+    monkeypatch.setenv("WORKSPACE_DOC_MAX_CHARS", "1000")
+    monkeypatch.setenv("WORKSPACE_SHEET_MAX_CELLS", "100")
+    monkeypatch.setenv("WORKSPACE_SOURCE_MAX_DEPTH", "20")
+    monkeypatch.setenv("WORKSPACE_ASSET_URL_TTL_SECONDS", str(ttl))
+
+    with pytest.raises(ValueError, match="between 300 and 900"):
+        Settings.from_environment()

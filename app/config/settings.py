@@ -75,6 +75,13 @@ class Settings:
             parsed_source_max_depth,
         ) < 1:
             raise ValueError("Workspace limits must be positive")
+        asset_url_ttl_seconds = _positive_environment_int(
+            "WORKSPACE_ASSET_URL_TTL_SECONDS", 300
+        )
+        if not 300 <= asset_url_ttl_seconds <= 900:
+            raise ValueError(
+                "WORKSPACE_ASSET_URL_TTL_SECONDS must be between 300 and 900"
+            )
         return cls(
             delegated_user,
             service_account,
@@ -110,7 +117,7 @@ class Settings:
             os.getenv("WORKSPACE_ASSET_STAGING_BUCKET", "").strip(),
             os.getenv("WORKSPACE_ASSET_STAGING_PREFIX", "").strip()
             or "gateway-assets/",
-            _positive_environment_int("WORKSPACE_ASSET_URL_TTL_SECONDS", 300),
+            asset_url_ttl_seconds,
         )
 
 

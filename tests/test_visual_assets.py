@@ -61,6 +61,21 @@ def test_svg_active_and_external_content_is_rejected():
             sanitize_svg(svg)
 
 
+def test_svg_static_inline_css_is_allowed_but_active_css_is_rejected():
+    safe = b'''<svg xmlns="http://www.w3.org/2000/svg"><style>.mark { fill: #123456; } @media (prefers-color-scheme: dark) { .mark { fill: #fff; } }</style><path class="mark" d="M0 0h1v1z"/></svg>'''
+    assert b"style" in sanitize_svg(safe)
+
+    for css in (
+        "@import 'https://example.com/x.css'",
+        "fill: expression(alert(1))",
+        "background: javascript:alert(1)",
+        r"background: u\72l(https://example.com/x.png)",
+    ):
+        svg = f'<svg xmlns="http://www.w3.org/2000/svg"><style>{css}</style></svg>'.encode()
+        with pytest.raises(WorkspaceAdapterError):
+            sanitize_svg(svg)
+
+
 def test_transient_publisher_deletes_staged_object_after_use():
     blob = Mock()
     blob.generate_signed_url.return_value = "https://signed.example/asset"
@@ -69,11 +84,40 @@ def test_transient_publisher_deletes_staged_object_after_use():
     client = Mock()
     client.bucket.return_value = bucket
     image = render_for_insertion(png_bytes(), PNG_MIME_TYPE)
+    signing_credentials = Mock()
     publisher = TransientAssetPublisher(
-        bucket_name="private-staging", prefix="assets/", ttl_seconds=300, client=client
+        bucket_name="private-staging",
+        prefix="assets/",
+        ttl_seconds=300,
+        client=client,
+        signing_credentials=signing_credentials,
     )
     with publisher.signed_uri(image) as uri:
         assert uri == "https://signed.example/asset"
         blob.delete.assert_not_called()
-    blob.upload_from_string.assert_called_once_with(image.content, content_type="image/png")
-    blob.delete.assert_called_once_with()
+    blob.upload_from_string.assert_called_once_with(
+        image.content, content_type="image/png", if_generation_match=0
+    )
+    assert blob.cache_control == "private, max-age=0, no-store"
+    assert blob.generate_signed_url.call_args.kwargs["credentials"] is signing_credentials
+    blob.delete.assert_called_once_with(if_generation_match=blob.generation)
+
+
+def test_transient_publisher_surfaces_cleanup_failure_after_success():
+    blob = Mock()
+    blob.generate_signed_url.return_value = "https://signed.example/asset"
+    blob.delete.side_effect = RuntimeError("cleanup failed")
+    bucket = Mock()
+    bucket.blob.return_value = blob
+    client = Mock()
+    client.bucket.return_value = bucket
+    publisher = TransientAssetPublisher(
+        bucket_name="private-staging", prefix="assets/", ttl_seconds=300, client=client
+    )
+
+    with pytest.raises(WorkspaceAdapterError) as error, publisher.signed_uri(
+        render_for_insertion(png_bytes(), PNG_MIME_TYPE)
+    ):
+        pass
+
+    assert error.value.code == "visual_asset_cleanup_failed"

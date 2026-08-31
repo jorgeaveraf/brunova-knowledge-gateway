@@ -23,6 +23,7 @@ class SourceStatus(str, Enum):
 class SourceType(str, Enum):
     KNOWLEDGE_SOURCE = "knowledge_source"
     ARCHIVE_DESTINATION = "archive_destination"
+    VALIDATION_SOURCE = "validation_source"
 
 
 class SourceCapabilities(BaseModel):

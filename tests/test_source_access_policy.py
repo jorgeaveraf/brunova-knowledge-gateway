@@ -183,3 +183,33 @@ def test_archive_destination_is_not_readable_as_a_knowledge_source():
             resource(ancestors=("archive_folder_123",))
         )
     assert implicit_error.value.code == "source_not_allowed"
+
+
+def test_validation_source_is_explicitly_readable_but_not_aggregated():
+    validation = SourceDefinition.model_validate(
+        {
+            "id": "workspace_validation",
+            "name": "Validation Sandbox",
+            "system": "google_workspace",
+            "location_type": "folder",
+            "location_id": "validation_folder_123",
+            "classification": "management_only",
+            "owner": ["Management"],
+            "status": "active",
+            "source_type": "validation_source",
+            "capabilities": {"read": True, "create": True, "update": True},
+        }
+    )
+    productive = registry().get("career_ops")
+    source_registry = SourceRegistry(
+        SourceRegistryDocument(version=1, sources=(productive, validation))
+    )
+    policy = SourceAccessPolicy(settings(), source_registry)
+
+    assert policy.authorize_source(validation).definition == validation
+    assert policy.authorize(
+        resource(ancestors=("validation_folder_123",))
+    ).source_id == "workspace_validation"
+    assert [item.definition.id for item in policy.allowed_sources().folders] == [
+        "career_ops"
+    ]

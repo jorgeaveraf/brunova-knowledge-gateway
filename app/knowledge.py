@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from contextlib import ExitStack
 
+from app.adapters.google_workspace.auth import build_keyless_signing_credentials
 from app.adapters.google_workspace.docs import GoogleDocsAdapter
 from app.adapters.google_workspace.drive import GoogleWorkspaceAdapter
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
@@ -371,6 +372,7 @@ def edit_authorized_document_images(
         bucket_name=docs_adapter._settings.workspace_asset_staging_bucket,
         prefix=docs_adapter._settings.workspace_asset_staging_prefix,
         ttl_seconds=docs_adapter._settings.workspace_asset_url_ttl_seconds,
+        signing_credentials=build_keyless_signing_credentials(docs_adapter._settings),
     )
     with ExitStack() as stack:
         prepared = []

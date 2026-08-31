@@ -103,6 +103,7 @@ def test_versioned_registry_matches_approved_source_capabilities():
     brunova_management = registry.get("brunova_management").capabilities
     hq_client = registry.get("hq_client").capabilities
     legacy_archive = registry.get("legacy_archive")
+    validation = registry.get("workspace_validation")
 
     assert career_ops.model_dump() == {
         "read": True,
@@ -139,6 +140,17 @@ def test_versioned_registry_matches_approved_source_capabilities():
         "update": False,
         "move": True,
         "delete": False,
+        "share": False,
+        "convert": False,
+    }
+    assert validation.source_type == SourceType.VALIDATION_SOURCE
+    assert validation.classification == Classification.MANAGEMENT_ONLY
+    assert validation.capabilities.model_dump() == {
+        "read": True,
+        "create": True,
+        "update": True,
+        "move": False,
+        "delete": True,
         "share": False,
         "convert": False,
     }

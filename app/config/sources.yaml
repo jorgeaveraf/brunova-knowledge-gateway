@@ -94,3 +94,21 @@ sources:
       delete: true
       share: false
       convert: true
+  - id: workspace_validation
+    name: Brunova Gateway Validation Sandbox
+    system: google_workspace
+    location_type: folder
+    location_id: 1BJFNtjLMeQBigM-ykD1_e6xawteEZdvd
+    classification: management_only
+    owner:
+      - Jorge
+    status: active
+    source_type: validation_source
+    capabilities:
+      read: true
+      create: true
+      update: true
+      move: false
+      delete: true
+      share: false
+      convert: false

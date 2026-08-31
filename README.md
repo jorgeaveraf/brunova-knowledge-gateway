@@ -14,7 +14,7 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.27.0:
+Arquitectura v0.27.1 (staged, sin tráfico productivo):
 
 Agents
 ↓
@@ -456,7 +456,17 @@ se crea una copia PNG permanente en Drive. Configuración no secreta:
 - `WORKSPACE_ASSET_STAGING_BUCKET`: bucket dedicado, privado y con lifecycle
   defensivo;
 - `WORKSPACE_ASSET_STAGING_PREFIX`: default `gateway-assets/`;
-- `WORKSPACE_ASSET_URL_TTL_SECONDS`: default 300.
+- `WORKSPACE_ASSET_URL_TTL_SECONDS`: entre 300 y 900; default 300.
+
+El bucket productivo de staging usa UBLA, Public Access Prevention enforced,
+versioning desactivado y lifecycle de borrado a un día. Su IAM de bucket sólo
+concede al runtime `storage.objects.create`, `storage.objects.get` y
+`storage.objects.delete`. La URL V4 se firma sin claves mediante IAM
+`signBlob`; PAP no bloquea signed URLs, que son autorizaciones acotadas y
+temporales. Los objetos se suben con precondición de no existencia y se borran
+con precondición de generación. Un fallo de cleanup se audita y devuelve error
+explícito si la operación principal había terminado; el lifecycle es el último
+respaldo.
 
 La inspección de Docs devuelve `image_ref` opacos, tab y dimensiones en puntos;
 además distingue inline/positioned y reporta el layout posicionado cuando
@@ -499,13 +509,36 @@ la revisión blob actual se marca `keepForever`; Drive permite hasta 200
 revisiones conservadas. El readback exige el mismo ID, package válido, hash
 exacto e invariantes solicitadas.
 
-Estas cinco tools nuevas permanecen **management-only en v0.27.0**, aunque las
+Estas cinco tools nuevas permanecen **management-only en v0.27.1**, aunque las
 mutaciones mapean internamente a `update`. No se amplía automáticamente
 `dev_hq_delivery`: la edición binaria y el staging temporal requieren una fase
 productiva adicional antes de crear una sub-capability developer-visible. La
 auditoría registra principal, source, artifact opaco, operación, resultado,
 approval/authorization mode, revisión/versión y hashes truncados de asset refs;
 nunca binarios, SVG, texto DOCX completo ni URLs firmadas.
+
+## Validation source
+
+`workspace_validation` es una carpeta separada con clasificación
+`management_only` y `source_type: validation_source`. Sólo habilita read,
+create, update y delete. Se excluye de los listados agregados de conocimiento
+productivo, no amplía `dev_hq_delivery`, y sólo puede usarse mediante selección
+explícita de source por management.
+
+## Google Sheets native images
+
+La auditoría de la API oficial bloquea la mutación de imágenes nativas en
+Sheets para el modelo de identidad actual. Sheets API v4 no expone creación ni
+reemplazo de imagen; sólo delete/position para objetos embebidos existentes.
+Apps Script admite `insertImage(blob)` y `replace(blob)`, pero Google documenta
+que `scripts.run` no funciona con cuentas de servicio. El Gateway no introduce
+tokens humanos, service-account keys, RPCs privados ni automatización de UI.
+
+`IMAGE(short-lived-url)` queda expresamente prohibido: no prueba persistencia
+después de expirar la URL y borrar staging. La decisión, alternativas rechazadas
+y condición de desbloqueo están en
+`docs/adr/0001-google-sheets-native-images.md`. Por este bloqueo, v0.27.1 se
+despliega sin tráfico y no se declara como incremento completo de Sheets.
 
 ## Artifact lifecycle
 

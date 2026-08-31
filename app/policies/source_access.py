@@ -83,10 +83,13 @@ class SourceAccessPolicy:
             raise self._not_allowed() from error
         if registered_source != source or source.location_id in self._blocked:
             raise self._not_allowed()
-        if require_read and source.source_type != SourceType.KNOWLEDGE_SOURCE:
+        if require_read and source.source_type not in {
+            SourceType.KNOWLEDGE_SOURCE,
+            SourceType.VALIDATION_SOURCE,
+        }:
             raise WorkspaceAdapterError(
                 "source_not_readable",
-                "Archive destinations cannot be used as knowledge sources.",
+                "Archive destinations cannot be read as governed sources.",
                 403,
             )
         if require_read and not source.capabilities.read:
@@ -112,7 +115,8 @@ class SourceAccessPolicy:
             raise self._not_allowed()
         for source in self._registry.sources:
             if (
-                source.source_type == SourceType.KNOWLEDGE_SOURCE
+                source.source_type
+                in {SourceType.KNOWLEDGE_SOURCE, SourceType.VALIDATION_SOURCE}
                 and source.location_id in resource_locations
             ):
                 return ClassificationPolicy.apply(source)

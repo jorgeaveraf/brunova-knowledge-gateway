@@ -35,3 +35,18 @@ def build_delegated_credentials(settings: Settings) -> Credentials:
         scopes=WORKSPACE_SCOPES,
         subject=settings.workspace_delegated_user,
     )
+
+
+def build_keyless_signing_credentials(settings: Settings) -> Credentials:
+    """Build service-account credentials backed by IAM signBlob, never a key."""
+
+    source_credentials, _ = google.auth.default(scopes=(CLOUD_PLATFORM_SCOPE,))
+    signer = iam.Signer(
+        Request(), source_credentials, settings.workspace_service_account_email
+    )
+    return service_account.Credentials(
+        signer=signer,
+        service_account_email=settings.workspace_service_account_email,
+        token_uri=TOKEN_URI,
+        scopes=(CLOUD_PLATFORM_SCOPE,),
+    )

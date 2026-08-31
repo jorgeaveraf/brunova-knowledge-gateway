@@ -386,7 +386,7 @@ def test_docs_image_edit_uses_governed_uris_refs_and_revision_control():
         {"replaceImage": {
             "imageObjectId": "image-internal",
             "uri": "https://signed.example/replace",
-            "imageReplaceMethod": "CENTER_INSIDE",
+            "imageReplaceMethod": "CENTER_CROP",
             "tabId": "tab-internal",
         }},
     ]
