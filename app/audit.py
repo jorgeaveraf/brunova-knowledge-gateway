@@ -141,6 +141,7 @@ def emit_audit_record(
     revision_id: str | None = None,
     artifact_version: str | None = None,
     asset_refs: list[str] | None = None,
+    asset_transformations: list[dict[str, Any]] | None = None,
 ) -> None:
     if os.getenv("WORKSPACE_AUDIT_ENABLED", "true").strip().lower() not in (
         "1",
@@ -189,6 +190,24 @@ def emit_audit_record(
         event["asset_ref_hashes"] = [
             hashlib.sha256(value.encode()).hexdigest()[:16]
             for value in asset_refs[:10]
+        ]
+    if asset_transformations:
+        event["asset_transformations"] = [
+            {
+                "asset_ref_hash": hashlib.sha256(str(item["asset_ref"]).encode()).hexdigest()[:16],
+                "original_mime_type": str(item["original_mime_type"])[:64],
+                "original_dimensions": [
+                    item.get("original_width_pixels"),
+                    item.get("original_height_pixels"),
+                ],
+                "derived_mime_type": str(item["derived_mime_type"])[:64],
+                "derived_dimensions": [
+                    int(item["derived_width_pixels"]),
+                    int(item["derived_height_pixels"]),
+                ],
+                "transformation": str(item["transformation"])[:32],
+            }
+            for item in asset_transformations[:10]
         ]
     if audience:
         event["audience"] = audience

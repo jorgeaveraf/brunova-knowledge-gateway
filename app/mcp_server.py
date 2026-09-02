@@ -618,7 +618,7 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.27.1",
+    version="0.28.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
@@ -676,6 +676,7 @@ def _execute_tool(
     revision_id: Callable[[T], str] | None = None,
     artifact_version: Callable[[T], str] | None = None,
     asset_refs: list[str] | None = None,
+    asset_transformations: Callable[[T], list[dict[str, Any]]] | None = None,
 ) -> T:
     request_id = _mcp_request_id(ctx)
     source_classification: str | None = None
@@ -739,6 +740,9 @@ def _execute_tool(
             revision_id=revision_id(result) if revision_id else None,
             artifact_version=artifact_version(result) if artifact_version else None,
             asset_refs=asset_refs,
+            asset_transformations=(
+                asset_transformations(result) if asset_transformations else None
+            ),
         )
         return result
     except WorkspaceAdapterError as error:
@@ -1404,6 +1408,9 @@ def edit_source_document_images(
         approval_reference=ContentMutationPolicy.normalized_approval_reference(approval_reference),
         revision_id=lambda result: result.revision_id,
         asset_refs=[operation.asset_ref for operation in operations],
+        asset_transformations=lambda result: [
+            item.model_dump() for item in result.asset_transformations
+        ],
     )
 
 

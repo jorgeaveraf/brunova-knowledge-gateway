@@ -152,6 +152,37 @@ def test_asset_audit_hashes_refs_and_records_version_without_content(monkeypatch
     assert "content" not in event
 
 
+def test_asset_audit_records_allowlisted_downscale_provenance_without_ref_or_url(monkeypatch):
+    monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
+    log_info = Mock()
+    monkeypatch.setattr("app.audit.audit_logger.info", log_info)
+    emit_audit_record(
+        request_id="request-hd-assets",
+        action="edit_source_document_images",
+        resource_id="artifact_opaque",
+        resource_type="google_document_images",
+        result="success",
+        http_status=200,
+        asset_transformations=[{
+            "asset_ref": "asset_secret_opaque",
+            "original_mime_type": "image/png",
+            "original_width_pixels": 8192,
+            "original_height_pixels": 1647,
+            "derived_mime_type": "image/png",
+            "derived_width_pixels": 800,
+            "derived_height_pixels": 161,
+            "transformation": "downscale",
+        }],
+    )
+    event = json.loads(log_info.call_args.args[0])
+    transformation = event["asset_transformations"][0]
+    assert transformation["original_dimensions"] == [8192, 1647]
+    assert transformation["derived_dimensions"] == [800, 161]
+    assert transformation["transformation"] == "downscale"
+    assert "asset_secret_opaque" not in log_info.call_args.args[0]
+    assert "signed" not in log_info.call_args.args[0]
+
+
 def test_discovery_audit_contains_count_without_candidate_details(monkeypatch):
     monkeypatch.setenv("WORKSPACE_AUDIT_ENABLED", "true")
     log_info = Mock()

@@ -81,10 +81,15 @@ from app.spreadsheet_production import (
     SpreadsheetStructure,
 )
 from app.visual_assets import (
+    MAX_SOURCE_BYTES,
+    AssetTransformationSummary,
     GoogleDocImageEditResult,
     GoogleDocImageOperation,
+    ReplaceGoogleDocImageOperation,
     TransientAssetPublisher,
     VisualAssetInspection,
+    derived_dimensions,
+    docs_points_to_render_pixels,
     inspect_visual_bytes,
     render_for_insertion,
 )
@@ -317,8 +322,16 @@ def inspect_authorized_visual_asset(
     resource = _resource_from_reference(
         reference_codec, workspace_adapter, source_policy, allowed_source, source_id, artifact_ref
     )
-    snapshot = workspace_adapter.download_binary(resource, max_bytes=10 * 1024 * 1024)
+    snapshot = workspace_adapter.download_binary(resource, max_bytes=MAX_SOURCE_BYTES)
     inspected = inspect_visual_bytes(snapshot.content, resource.mime_type)
+    recommended_width, recommended_height = derived_dimensions(
+        inspected.width, inspected.height, None, None
+    )
+    requires_downscale = bool(
+        inspected.width
+        and inspected.height
+        and (recommended_width, recommended_height) != (inspected.width, inspected.height)
+    )
     return VisualAssetInspection(
         asset_ref=reference_codec.encode_asset(
             source_id=source_id, artifact_id=resource.id, mime_type=inspected.detected_mime_type
@@ -330,8 +343,16 @@ def inspect_authorized_visual_asset(
         aspect_ratio=(inspected.width / inspected.height if inspected.width and inspected.height else None),
         file_size=snapshot.size,
         source_id=source_id,
-        directly_insertable_in_docs=inspected.detected_mime_type in {"image/png", "image/jpeg"},
-        rendering_required=inspected.detected_mime_type == "image/svg+xml",
+        requires_downscale=requires_downscale,
+        recommended_derived_width_pixels=recommended_width,
+        recommended_derived_height_pixels=recommended_height,
+        directly_insertable_in_docs=(
+            inspected.detected_mime_type in {"image/png", "image/jpeg"}
+            and not requires_downscale
+        ),
+        rendering_required=(
+            inspected.detected_mime_type == "image/svg+xml" or requires_downscale
+        ),
     )
 
 
@@ -376,6 +397,7 @@ def edit_authorized_document_images(
     )
     with ExitStack() as stack:
         prepared = []
+        transformations = []
         for operation in operations:
             asset_id, claimed_mime = reference_codec.decode_asset(
                 operation.asset_ref, source_id=source_id
@@ -386,16 +408,36 @@ def edit_authorized_document_images(
                 raise WorkspaceAdapterError(
                     "asset_reference_stale", "The governed asset MIME type has changed.", 409
                 )
-            snapshot = workspace_adapter.download_binary(asset, max_bytes=10 * 1024 * 1024)
+            snapshot = workspace_adapter.download_binary(asset, max_bytes=MAX_SOURCE_BYTES)
             width = getattr(operation, "width_points", None)
             height = getattr(operation, "height_points", None)
+            if isinstance(operation, ReplaceGoogleDocImageOperation):
+                replaced = next(
+                    (item for item in before.images if item.image_ref == operation.image_ref),
+                    None,
+                )
+                if replaced is not None:
+                    width = replaced.width_points
+                    height = replaced.height_points
             image = render_for_insertion(
                 snapshot.content,
                 asset.mime_type,
-                width_pixels=round(width * 96 / 72) if width else None,
-                height_pixels=round(height * 96 / 72) if height else None,
+                width_pixels=docs_points_to_render_pixels(width),
+                height_pixels=docs_points_to_render_pixels(height),
             )
             prepared.append((operation, stack.enter_context(publisher.signed_uri(image))))
+            transformations.append(
+                AssetTransformationSummary(
+                    asset_ref=operation.asset_ref,
+                    original_mime_type=image.source_mime_type or asset.mime_type,
+                    original_width_pixels=image.source_width_pixels,
+                    original_height_pixels=image.source_height_pixels,
+                    derived_mime_type=image.mime_type,
+                    derived_width_pixels=image.width_pixels,
+                    derived_height_pixels=image.height_pixels,
+                    transformation=image.transformation,
+                )
+            )
         revision = docs_adapter.edit_images(
             document,
             required_revision_id=required_revision_id.strip(),
@@ -421,6 +463,7 @@ def edit_authorized_document_images(
         revision_id=revision,
         image_count=after.image_count,
         applied_operations=len(operations),
+        asset_transformations=transformations,
     )
 
 

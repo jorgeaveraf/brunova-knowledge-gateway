@@ -14,7 +14,7 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.27.1:
+Arquitectura v0.28.0:
 
 Agents
 ↓
@@ -447,8 +447,34 @@ Google Docs `insertInlineImage` y `replaceImage` requieren una URI recuperable
 por Google, de hasta 2 KB, y solo admiten PNG, JPEG o GIF. Un SVG privado de
 Drive no es insertable directamente. El Gateway sanea SVG (sin scripts,
 handlers, objetos, foreign content, referencias externas o `url(...)`),
-conserva aspect ratio, limita cada dimensión a 4,096 px y el total a 25 MP, y
-rasteriza a PNG. PNG/JPEG se decodifican y verifican antes de usarse.
+conserva aspect ratio y rasteriza a PNG. PNG/JPEG se decodifican y verifican
+antes de usarse.
+
+Desde v0.28.0, validación del master y validación de la representación derivada
+son contratos separados. El master canónico permanece limitado a 10 MiB,
+16,384 px por eje y 50 MP; firma, MIME real, estructura y dimensiones se
+validan antes de decodificar todos los píxeles. La representación que se envía
+a staging permanece limitada a 10 MiB, 4,096 px por eje y 25 MP. Por tanto, un
+PNG/JPEG canónico de 8,192 × 1,647 es válido como source y se reduce de forma
+transitoria; no se elimina el límite de inserción ni se modifica o copia el
+archivo de Drive.
+
+El orden gobernado es: descarga acotada → firma/MIME → dimensiones y límites
+del source → verify/decode → cálculo de representación → downscale/rasterize →
+límites derivados → staging privado → insert/replace con revisión → readback →
+cleanup. Antes de v0.28.0, el mismo límite de 4,096 px se aplicaba dentro de
+`inspect_visual_bytes`, antes de `render_for_insertion`; un master HD era
+rechazado antes de que pudiera reducirse o llegar a staging/Docs.
+
+Cuando la operación incluye tamaño visual en puntos, el Gateway calcula el
+raster a 192 DPI efectivos (2× la densidad CSS/Docs de 96 DPI), conserva aspect
+ratio y nunca amplía un raster por encima de sus píxeles fuente. En replace usa
+las dimensiones del objeto obtenidas en la inspección previa. Sin intención de
+tamaño, ajusta por el mínimo de los límites de ancho, alto, píxeles y escala
+1. PNG conserva alpha y usa LANCZOS; JPEG conserva/normaliza RGB y usa calidad
+92 solo cuando requiere transformación. Un PNG/JPEG que no necesita cambio no
+se recomprime. SVG se sanea igual que antes, pero se rasteriza directamente al
+target calculado en vez de producir primero un bitmap sobredimensionado.
 
 La representación se publica únicamente en
 `WORKSPACE_ASSET_STAGING_BUCKET` con una URL V4 firmada de corta duración. Docs
@@ -511,7 +537,7 @@ la revisión blob actual se marca `keepForever`; Drive permite hasta 200
 revisiones conservadas. El readback exige el mismo ID, package válido, hash
 exacto e invariantes solicitadas.
 
-Estas cinco tools nuevas permanecen **management-only en v0.27.1**, aunque las
+Estas cinco tools nuevas permanecen **management-only en v0.28.0**, aunque las
 mutaciones mapean internamente a `update`. No se amplía `dev_hq_delivery`.
 La edición DOCX es una capacidad excepcional, acotada y management-only: no es
 el lifecycle preferido y no ha sido validada en producción. El lifecycle
