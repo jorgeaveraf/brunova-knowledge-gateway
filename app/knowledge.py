@@ -412,8 +412,22 @@ def edit_authorized_document_images(
             width = getattr(operation, "width_points", None)
             height = getattr(operation, "height_points", None)
             if isinstance(operation, ReplaceGoogleDocImageOperation):
+                target_image_identity = reference_codec.decode_document_image(
+                    operation.image_ref,
+                    source_id=source_id,
+                    artifact_id=document.id,
+                )
                 replaced = next(
-                    (item for item in before.images if item.image_ref == operation.image_ref),
+                    (
+                        item
+                        for item in before.images
+                        if reference_codec.decode_document_image(
+                            item.image_ref,
+                            source_id=source_id,
+                            artifact_id=document.id,
+                        )
+                        == target_image_identity
+                    ),
                     None,
                 )
                 if replaced is not None:

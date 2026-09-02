@@ -154,6 +154,10 @@ def test_hd_insert_and_replace_are_target_aware_cleanup_staging_and_preserve_mas
     image_ref = codec.encode_document_image(
         source_id="workspace_validation", artifact_id="document_12345", object_id="image_12345"
     )
+    inspected_image_ref = codec.encode_document_image(
+        source_id="workspace_validation", artifact_id="document_12345", object_id="image_12345"
+    )
+    assert inspected_image_ref != image_ref
     document = WorkspaceResource(
         id="document_12345",
         name="HD validation",
@@ -193,7 +197,7 @@ def test_hd_insert_and_replace_are_target_aware_cleanup_staging_and_preserve_mas
             image_count=1,
             images=[
                 GoogleDocImageSummary(
-                    image_ref=image_ref,
+                    image_ref=inspected_image_ref,
                     kind="inline",
                     width_points=300,
                     height_points=60.32,
