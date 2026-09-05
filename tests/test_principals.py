@@ -13,6 +13,7 @@ from app.auth.principals import (
     Principal,
     PrincipalResolver,
     ProviderScope,
+    SignalWorkerPrincipalRecord,
     authorize_workspace_operation,
     bind_principal,
     reset_principal,
@@ -72,6 +73,27 @@ def test_resolver_preserves_management_and_resolves_developer_without_plaintext(
     assert developer.id == "dev_example"
     assert developer.sources == frozenset({"hq_client"})
     assert developer_token not in repr(resolver)
+
+
+def test_resolver_supports_restricted_acquisition_signal_worker():
+    worker_token = "worker-token-with-at-least-256-bits-of-randomness"
+    worker_record = SignalWorkerPrincipalRecord.model_validate(
+        {
+            "id": "acquisition_worker",
+            "type": "signal_worker",
+            "token_sha256": hashlib.sha256(worker_token.encode()).hexdigest(),
+            "signal_types": ["acquisition_work_available"],
+            "operations": ["list", "get", "claim", "release", "complete", "dismiss"],
+        }
+    )
+    principal, error = PrincipalResolver("management-token", (worker_record,)).resolve(
+        f"Bearer {worker_token}"
+    )
+    assert error is None
+    assert principal.type == "signal_worker"
+    assert principal.signal_types == frozenset({"acquisition_work_available"})
+    assert principal.providers == ProviderScope()
+    assert worker_token not in repr(principal)
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -16,6 +17,7 @@ from app.agent_signals import (
     AgentSignalObjectConflict,
     AgentSignalPayload,
     AgentSignalRecord,
+    MAX_SIGNAL_BYTES,
     SignalPriority,
     SignalStatus,
     StoredSignal,
@@ -26,6 +28,7 @@ from app.auth.principals import (
     CapabilityScope,
     Principal,
     ProviderScope,
+    SignalWorkerPrincipalRecord,
     bind_principal,
     reset_principal,
 )
@@ -110,6 +113,35 @@ def payload(**kwargs):
     return AgentSignalPayload.model_validate(signal_dict(**kwargs))
 
 
+def acquisition_dict(
+    work_item_id="11111111-1111-4111-8111-111111111111",
+    *,
+    command_id="command-3d-1",
+    correlation_id="correlation-3d-1",
+):
+    return {
+        "schema_version": "1",
+        "signal_id": f"acquisition:{work_item_id}:ready:v1",
+        "signal_type": "acquisition_work_available",
+        "priority": "attention",
+        "occurred_at": "2026-09-05T03:00:00Z",
+        "source": "brunova_acquisition_portal",
+        "actor_type": "HUMAN_PORTAL",
+        "actor_id": "google:operator-subject",
+        "reason": {"code": "authoritative_work_available"},
+        "references": {
+            "work_item_id": work_item_id,
+            "command_id": command_id,
+            "correlation_id": correlation_id,
+        },
+        "metadata": {},
+    }
+
+
+def acquisition_payload(**kwargs):
+    return AgentSignalPayload.model_validate(acquisition_dict(**kwargs))
+
+
 def receive(inbox, item, message_id="pubsub-1"):
     return inbox.receive(
         item,
@@ -179,6 +211,48 @@ def test_c_invalid_common_and_whatsapp_specific_schema_are_rejected():
         "metadata": {},
     }
     assert AgentSignalPayload.model_validate(future).contact is None
+
+
+def test_acquisition_signal_is_minimal_exact_and_deterministically_identified():
+    signal = acquisition_payload()
+    assert signal.signal_type == "acquisition_work_available"
+    assert signal.signal_id == (
+        "acquisition:11111111-1111-4111-8111-111111111111:ready:v1"
+    )
+    assert signal.metadata == {}
+    assert signal.contact is signal.conversation is signal.preview is None
+
+    invalid_cases = []
+    wrong_source = acquisition_dict()
+    wrong_source["source"] = "openwa"
+    invalid_cases.append(wrong_source)
+    wrong_schema = acquisition_dict()
+    wrong_schema["schema_version"] = "2"
+    invalid_cases.append(wrong_schema)
+    missing_reference = acquisition_dict()
+    del missing_reference["references"]["work_item_id"]
+    invalid_cases.append(missing_reference)
+    business_payload = acquisition_dict()
+    business_payload["metadata"] = {"hypothesis": "must never cross the wake boundary"}
+    invalid_cases.append(business_payload)
+    wrong_identity = acquisition_dict()
+    wrong_identity["signal_id"] = "acquisition:different:ready:v1"
+    invalid_cases.append(wrong_identity)
+    for item in invalid_cases:
+        with pytest.raises(ValueError):
+            AgentSignalPayload.model_validate(item)
+    with pytest.raises(ValueError, match="too large"):
+        AgentSignalPayload.validate_bytes(b"x" * (MAX_SIGNAL_BYTES + 1))
+
+
+def test_acquisition_duplicate_reconciles_to_one_durable_signal():
+    backend = MemorySignalBackend()
+    inbox = AgentSignalInbox(backend)
+    first = receive(inbox, acquisition_payload(), message_id="publish-1")
+    duplicate = receive(inbox, acquisition_payload(), message_id="publish-retry")
+    assert first.created is True
+    assert duplicate.created is False
+    assert len(backend.items) == 1
 
 
 def test_whatsapp_hubspot_enrichment_accepts_value_null_absent_and_empty():
@@ -421,6 +495,81 @@ def test_management_mcp_tools_drive_the_lifecycle(monkeypatch):
     assert len(listed.structured_content["signals"]) == 2
     assert fetched.structured_content["signal"]["signal_id"] == "mcp-complete"
     assert claimed.structured_content["signal"]["status"] == "claimed"
+    assert released.structured_content["signal"]["status"] == "pending"
+    assert completed.structured_content["signal"]["status"] == "completed"
+    assert dismissed.structured_content["signal"]["status"] == "dismissed"
+
+
+def test_acquisition_worker_catalog_and_data_are_signal_type_scoped(monkeypatch):
+    inbox = AgentSignalInbox(MemorySignalBackend())
+    receive(inbox, acquisition_payload(), message_id="acquisition-publish")
+    receive(inbox, payload(signal_id="unrelated-whatsapp"), message_id="whatsapp-publish")
+    second = acquisition_payload(
+        work_item_id="22222222-2222-4222-8222-222222222222",
+        command_id="command-3d-2",
+        correlation_id="correlation-3d-2",
+    )
+    receive(inbox, second, message_id="acquisition-publish-2")
+    runtime = SimpleNamespace(agent_signal_inbox=inbox)
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: runtime)
+    record = SignalWorkerPrincipalRecord.model_validate(
+        {
+            "id": "acquisition_worker",
+            "type": "signal_worker",
+            "token_sha256": hashlib.sha256(b"worker-token").hexdigest(),
+            "signal_types": ["acquisition_work_available"],
+            "operations": ["list", "get", "claim", "release", "complete", "dismiss"],
+        }
+    )
+    principal = Principal.from_record(record)
+
+    async def scenario():
+        token = bind_principal(principal)
+        try:
+            async with Client(mcp_module.mcp_server) as client:
+                tools = await client.list_tools()
+                listed = await client.call_tool("list_agent_signals", {})
+                unrelated = await client.call_tool(
+                    "get_agent_signal", {"signal_id": "unrelated-whatsapp"}
+                )
+                status = await client.call_tool("agent_signal_status", {})
+                signal_id = acquisition_payload().signal_id
+                claimed = await client.call_tool(
+                    "claim_agent_signal", {"signal_id": signal_id}
+                )
+                released = await client.call_tool(
+                    "release_agent_signal", {"signal_id": signal_id}
+                )
+                await client.call_tool("claim_agent_signal", {"signal_id": signal_id})
+                completed = await client.call_tool(
+                    "complete_agent_signal",
+                    {
+                        "signal_id": signal_id,
+                        "completion_summary": "Wake handed to a synthetic worker.",
+                    },
+                )
+                dismissed = await client.call_tool(
+                    "dismiss_agent_signal",
+                    {
+                        "signal_id": second.signal_id,
+                        "reason": "Synthetic 3D cleanup.",
+                    },
+                )
+                return tools, listed, unrelated, status, claimed, released, completed, dismissed
+        finally:
+            reset_principal(token)
+
+    tools, listed, unrelated, status, claimed, released, completed, dismissed = asyncio.run(scenario())
+    names = {tool.name for tool in tools.tools}
+    assert names == set(mcp_module.SIGNAL_WORKER_TOOLS)
+    assert [item["signal_type"] for item in listed.structured_content["signals"]] == [
+        "acquisition_work_available",
+        "acquisition_work_available",
+    ]
+    assert unrelated.is_error is True
+    assert "signal_type_denied" in unrelated.content[0].text
+    assert status.is_error is True
+    assert claimed.structured_content["signal"]["claimed_by"] == "acquisition_worker"
     assert released.structured_content["signal"]["status"] == "pending"
     assert completed.structured_content["signal"]["status"] == "completed"
     assert dismissed.structured_content["signal"]["status"] == "dismissed"

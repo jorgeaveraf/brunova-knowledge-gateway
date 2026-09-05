@@ -65,17 +65,46 @@ class DeveloperPrincipalRecord(BaseModel):
         return value
 
 
+SignalWorkerOperation = Literal[
+    "list", "get", "claim", "release", "complete", "dismiss"
+]
+
+
+class SignalWorkerPrincipalRecord(BaseModel):
+    """Machine principal limited to one allowlisted Signal extension."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]{2,63}$")
+    type: Literal["signal_worker"]
+    status: Literal["active", "revoked"] = "active"
+    token_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    signal_types: frozenset[Literal["acquisition_work_available"]] = Field(
+        min_length=1
+    )
+    operations: frozenset[SignalWorkerOperation] = Field(min_length=1)
+    expires_at: datetime | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("expires_at")
+    @classmethod
+    def expiration_must_include_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("expires_at must include a timezone")
+        return value
+
+
 class PrincipalRegistryDocument(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     version: Literal[1]
-    principals: tuple[DeveloperPrincipalRecord, ...]
+    principals: tuple[DeveloperPrincipalRecord | SignalWorkerPrincipalRecord, ...]
 
     @field_validator("principals")
     @classmethod
     def principals_must_be_unique(
-        cls, value: tuple[DeveloperPrincipalRecord, ...]
-    ) -> tuple[DeveloperPrincipalRecord, ...]:
+        cls, value: tuple[DeveloperPrincipalRecord | SignalWorkerPrincipalRecord, ...]
+    ) -> tuple[DeveloperPrincipalRecord | SignalWorkerPrincipalRecord, ...]:
         if len({item.id for item in value}) != len(value):
             raise ValueError("Principal IDs must be unique")
         if len({item.token_sha256 for item in value}) != len(value):
@@ -86,11 +115,13 @@ class PrincipalRegistryDocument(BaseModel):
 @dataclass(frozen=True, repr=False)
 class Principal:
     id: str
-    type: Literal["management", "developer"]
+    type: Literal["management", "developer", "signal_worker"]
     status: Literal["active", "revoked"]
     providers: ProviderScope
     sources: frozenset[str] | None
     capabilities: CapabilityScope
+    signal_types: frozenset[str] = frozenset()
+    signal_operations: frozenset[str] = frozenset()
     expires_at: datetime | None = None
 
     @classmethod
@@ -115,7 +146,21 @@ class Principal:
         )
 
     @classmethod
-    def from_record(cls, record: DeveloperPrincipalRecord) -> "Principal":
+    def from_record(
+        cls, record: DeveloperPrincipalRecord | SignalWorkerPrincipalRecord
+    ) -> "Principal":
+        if isinstance(record, SignalWorkerPrincipalRecord):
+            return cls(
+                id=record.id,
+                type=record.type,
+                status=record.status,
+                providers=ProviderScope(),
+                sources=frozenset(),
+                capabilities=CapabilityScope(),
+                signal_types=frozenset(record.signal_types),
+                signal_operations=frozenset(record.operations),
+                expires_at=record.expires_at,
+            )
         return cls(
             id=record.id,
             type=record.type,
@@ -143,7 +188,11 @@ class PrincipalRegistryConfigurationError(RuntimeError):
 class PrincipalResolver:
     """Resolve management and developer bearer tokens without retaining plaintext."""
 
-    def __init__(self, management_token: str, records: tuple[DeveloperPrincipalRecord, ...]):
+    def __init__(
+        self,
+        management_token: str,
+        records: tuple[DeveloperPrincipalRecord | SignalWorkerPrincipalRecord, ...],
+    ):
         self._management_token = management_token
         self._records = records
 

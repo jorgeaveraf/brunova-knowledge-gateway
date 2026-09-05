@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from google.api_core.exceptions import GoogleAPIError, NotFound, PreconditionFailed
 from google.cloud import storage
@@ -72,6 +73,7 @@ class AgentSignalPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    schema_version: Literal["1"] = "1"
     signal_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     signal_type: str = Field(pattern=r"^[a-z][a-z0-9_]{2,127}$")
     priority: SignalPriority
@@ -80,6 +82,10 @@ class AgentSignalPayload(BaseModel):
     reason: dict[str, Any] = Field(min_length=1)
     references: dict[str, str] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    actor_type: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{2,63}$")
+    actor_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+    )
     contact: WhatsAppContact | None = None
     conversation: WhatsAppConversation | None = None
     preview: str | None = Field(default=None, max_length=500)
@@ -118,6 +124,28 @@ class AgentSignalPayload(BaseModel):
                 if existing is not None and existing != value:
                     raise ValueError(f"WhatsApp references.{key} conflicts with payload")
                 self.references[key] = value
+        elif self.signal_type == "acquisition_work_available":
+            if self.source != "brunova_acquisition_portal":
+                raise ValueError("Acquisition wake signals have an invalid source")
+            if self.actor_type != "HUMAN_PORTAL" or self.actor_id is None:
+                raise ValueError("Acquisition wake signals require Human actor provenance")
+            if self.reason != {"code": "authoritative_work_available"}:
+                raise ValueError("Acquisition wake signals have an invalid reason")
+            if self.metadata != {}:
+                raise ValueError("Acquisition wake signals cannot contain metadata")
+            if self.contact is not None or self.conversation is not None or self.preview is not None:
+                raise ValueError("Acquisition wake signals cannot contain business payload")
+            if set(self.references) != {
+                "work_item_id", "command_id", "correlation_id"
+            }:
+                raise ValueError("Acquisition wake signals require exact references")
+            opaque = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+            for key, value in self.references.items():
+                if not re.fullmatch(opaque, value):
+                    raise ValueError(f"Acquisition references.{key} is invalid")
+            expected_id = f"acquisition:{self.references['work_item_id']}:ready:v1"
+            if self.signal_id != expected_id:
+                raise ValueError("Acquisition Signal identity does not match WorkItem")
         return self
 
     @classmethod
@@ -380,6 +408,7 @@ class AgentSignalInbox:
         *,
         completion_summary: str,
         outcome_metadata: dict[str, Any] | None = None,
+        principal_id: str | None = None,
     ) -> AgentSignalRecord:
         summary = completion_summary.strip()
         if not summary or len(summary) > 1000:
@@ -393,6 +422,12 @@ class AgentSignalInbox:
         def transition(record: AgentSignalRecord) -> AgentSignalRecord:
             if record.status != SignalStatus.CLAIMED or self._is_expired(record, now):
                 raise _transition_error(record.status, SignalStatus.COMPLETED)
+            if principal_id is not None and record.claimed_by != principal_id:
+                raise WorkspaceAdapterError(
+                    "agent_signal_claim_owner_mismatch",
+                    "The Agent Signal is claimed by another principal.",
+                    409,
+                )
             return record.model_copy(
                 update={
                     "status": SignalStatus.COMPLETED,
@@ -405,7 +440,9 @@ class AgentSignalInbox:
 
         return self._update(signal_id, transition)
 
-    def dismiss(self, signal_id: str, *, reason: str) -> AgentSignalRecord:
+    def dismiss(
+        self, signal_id: str, *, reason: str, principal_id: str | None = None
+    ) -> AgentSignalRecord:
         normalized = reason.strip()
         if not normalized or len(normalized) > 500:
             raise WorkspaceAdapterError(
@@ -416,6 +453,16 @@ class AgentSignalInbox:
         def transition(record: AgentSignalRecord) -> AgentSignalRecord:
             if record.status not in {SignalStatus.PENDING, SignalStatus.CLAIMED}:
                 raise _transition_error(record.status, SignalStatus.DISMISSED)
+            if (
+                principal_id is not None
+                and record.status == SignalStatus.CLAIMED
+                and record.claimed_by != principal_id
+            ):
+                raise WorkspaceAdapterError(
+                    "agent_signal_claim_owner_mismatch",
+                    "The Agent Signal is claimed by another principal.",
+                    409,
+                )
             return record.model_copy(
                 update={
                     "status": SignalStatus.DISMISSED,
@@ -427,12 +474,20 @@ class AgentSignalInbox:
 
         return self._update(signal_id, transition)
 
-    def release(self, signal_id: str) -> AgentSignalRecord:
+    def release(
+        self, signal_id: str, *, principal_id: str | None = None
+    ) -> AgentSignalRecord:
         now = self._clock()
 
         def transition(record: AgentSignalRecord) -> AgentSignalRecord:
             if record.status != SignalStatus.CLAIMED:
                 raise _transition_error(record.status, SignalStatus.PENDING)
+            if principal_id is not None and record.claimed_by != principal_id:
+                raise WorkspaceAdapterError(
+                    "agent_signal_claim_owner_mismatch",
+                    "The Agent Signal is claimed by another principal.",
+                    409,
+                )
             return record.model_copy(
                 update={
                     "status": SignalStatus.PENDING,

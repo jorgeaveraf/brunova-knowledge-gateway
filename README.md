@@ -14,7 +14,7 @@ Capacidades empresariales:
 - HubSpot CRM mediante el Remote MCP oficial, detrás del gobierno Brunova.
 - n8n mediante su MCP, con acceso completo a toda capability expuesta por n8n.
 
-Arquitectura v0.28.0:
+Arquitectura v0.29.0:
 
 Agents
 ↓
@@ -1031,11 +1031,20 @@ proyecta a `references` cuando contiene un identificador real. El Gateway no
 recupera conversaciones, media ni CRM, y recibir una señal no ejecuta ninguna
 tool downstream.
 
-Las tools `list_agent_signals`, `get_agent_signal`, `claim_agent_signal`,
-`complete_agent_signal`, `dismiss_agent_signal`, `release_agent_signal` y
-`agent_signal_status` son exclusivamente management. El historial seguro se
-consulta aparte mediante `get_agent_signal_operation_history`, sin mezclarlo con
-el historial source-scoped de Workspace. Estas tools no aparecen en
+La extensión `acquisition_work_available` acepta exclusivamente `source =
+brunova_acquisition_portal`, actor `HUMAN_PORTAL`, reason code
+`authoritative_work_available`, metadata vacía y referencias opacas exactas a
+WorkItem, command y correlation. El `signal_id` debe ser
+`acquisition:<work_item_id>:ready:v1`. Cualquier dato de contacto, conversación
+o preview invalida el payload; el Gateway conserva solo el aviso mínimo después
+de que el Engine ya hizo commit.
+
+Management conserva todas las tools de Signals, incluido status e historial.
+Un principal `signal_worker` dedicado puede recibir únicamente las seis tools
+de ciclo de vida `list/get/claim/release/complete/dismiss`, limitadas a
+`acquisition_work_available`. No obtiene status agregado, historial, providers,
+Workspace, management ni acceso HTTP fuera de MCP; las mutaciones de una claim
+verifican además que el principal sea su owner. Ninguna tool Signal aparece en
 `tools/list` de developer y una invocación directa vuelve a fallar cerrada. Los
 eventos de auditoría contienen provider, operación, principal, `signal_id`,
 `signal_type`, transición, resultado y correlation ID; nunca preview, teléfono,
@@ -1044,6 +1053,12 @@ chat ni body completo.
 Los payloads permanentemente inválidos se auditan sin contenido y reciben 204
 para evitar retry infinito. Un fallo de persistencia recibe 5xx, de modo que
 Pub/Sub redelivere. Una DLQ puede agregarse en un incremento posterior.
+
+Object Versioning permanece habilitado en el bucket compartido. La lifecycle
+policy elimina únicamente generaciones no vigentes bajo
+`agent-signals/items/`; objetos live, otros prefijos y sus generaciones quedan
+fuera de esa regla. La retención terminal lógica continúa siendo responsabilidad
+del Inbox y la soft-delete del bucket sigue siendo la última recuperación.
 
 Configuración no secreta esperada:
 

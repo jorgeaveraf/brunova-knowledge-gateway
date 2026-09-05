@@ -123,6 +123,20 @@ class GatewayAuthenticationMiddleware:
                     source_id=denied_source_id,
                 )
                 return
+        elif principal.type == "signal_worker" and not request.url.path.startswith("/mcp"):
+            await self._reject(
+                scope=scope,
+                receive=receive,
+                send=send,
+                request_id=request_id,
+                consumer=consumer,
+                error_code="tool_denied",
+                status_code=403,
+                principal_id=principal.id,
+                principal_type=principal.type,
+                provider="agent_signals",
+            )
+            return
         request.state.principal = principal
         emit_audit_record(
             request_id=request_id,

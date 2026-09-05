@@ -1,0 +1,16 @@
+{
+  "rule": [
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "daysSinceNoncurrentTime": 1,
+        "isLive": false,
+        "matchesPrefix": [
+          "agent-signals/items/"
+        ]
+      }
+    }
+  ]
+}

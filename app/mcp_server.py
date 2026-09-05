@@ -509,6 +509,15 @@ MANAGEMENT_ONLY_TOOLS = frozenset(
     }
 )
 
+SIGNAL_WORKER_TOOLS = {
+    "list_agent_signals": "list",
+    "get_agent_signal": "get",
+    "claim_agent_signal": "claim",
+    "release_agent_signal": "release",
+    "complete_agent_signal": "complete",
+    "dismiss_agent_signal": "dismiss",
+}
+
 TOOL_CAPABILITIES: dict[str, str] = {
     "list_sources": "read",
     "resolve_source_artifact": "read",
@@ -555,7 +564,7 @@ def _tool_provider(name: str) -> str:
 
 
 def _effective_developer_capabilities(principal: Any) -> frozenset[str] | None:
-    if principal.type == "management":
+    if principal.type != "developer":
         return None
     try:
         sources = get_runtime_gateway().registry.sources
@@ -589,6 +598,9 @@ def _principal_can_see_tool(
 def _tool_authorization_error(principal: Any, name: str) -> str | None:
     if principal.type == "management":
         return None
+    if principal.type == "signal_worker":
+        operation = SIGNAL_WORKER_TOOLS.get(name)
+        return None if operation in principal.signal_operations else "tool_denied"
     if name in MANAGEMENT_ONLY_TOOLS:
         return "tool_denied"
     provider = _tool_provider(name)
@@ -618,7 +630,7 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.28.0",
+    version="0.29.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
@@ -2100,6 +2112,67 @@ def _agent_signal_inbox(runtime: KnowledgeRuntime):
     return runtime.agent_signal_inbox
 
 
+def _authorized_signal_type_filter(requested: str | None) -> str | None:
+    principal = active_principal()
+    if principal.type != "signal_worker":
+        return requested
+    if requested is not None and requested not in principal.signal_types:
+        raise WorkspaceAdapterError(
+            "signal_type_denied", "The requested Signal type is not authorized.", 403
+        )
+    # Signal worker records are deliberately constrained to one allowlisted type.
+    return next(iter(principal.signal_types))
+
+
+def _authorized_signal(runtime: KnowledgeRuntime, signal_id: str) -> AgentSignalRecord:
+    signal = _agent_signal_inbox(runtime).get(signal_id)
+    principal = active_principal()
+    if principal.type == "signal_worker" and signal.signal_type not in principal.signal_types:
+        raise WorkspaceAdapterError(
+            "signal_type_denied", "The requested Signal type is not authorized.", 403
+        )
+    return signal
+
+
+def _claim_authorized_signal(runtime: KnowledgeRuntime, signal_id: str) -> AgentSignalRecord:
+    _authorized_signal(runtime, signal_id)
+    return _agent_signal_inbox(runtime).claim(
+        signal_id, principal_id=active_principal().id
+    )
+
+
+def _release_authorized_signal(runtime: KnowledgeRuntime, signal_id: str) -> AgentSignalRecord:
+    _authorized_signal(runtime, signal_id)
+    return _agent_signal_inbox(runtime).release(
+        signal_id, principal_id=active_principal().id
+    )
+
+
+def _complete_authorized_signal(
+    runtime: KnowledgeRuntime,
+    signal_id: str,
+    *,
+    completion_summary: str,
+    outcome_metadata: dict[str, Any] | None,
+) -> AgentSignalRecord:
+    _authorized_signal(runtime, signal_id)
+    return _agent_signal_inbox(runtime).complete(
+        signal_id,
+        completion_summary=completion_summary,
+        outcome_metadata=outcome_metadata,
+        principal_id=active_principal().id,
+    )
+
+
+def _dismiss_authorized_signal(
+    runtime: KnowledgeRuntime, signal_id: str, *, reason: str
+) -> AgentSignalRecord:
+    _authorized_signal(runtime, signal_id)
+    return _agent_signal_inbox(runtime).dismiss(
+        signal_id, reason=reason, principal_id=active_principal().id
+    )
+
+
 def _execute_agent_signal_tool(
     *,
     ctx: Context,
@@ -2161,7 +2234,7 @@ def list_agent_signals(
             signals=_agent_signal_inbox(runtime).list(
                 status=status,
                 priority=priority,
-                signal_type=signal_type,
+                signal_type=_authorized_signal_type_filter(signal_type),
                 source=source,
                 limit=limit,
             ),
@@ -2179,7 +2252,7 @@ def get_agent_signal(signal_id: str, ctx: Context) -> AgentSignalToolResult:
         action="get_agent_signal",
         signal_id=signal_id,
         operation=lambda runtime, request_id: AgentSignalToolResult(
-            signal=_agent_signal_inbox(runtime).get(signal_id),
+            signal=_authorized_signal(runtime, signal_id),
             request_id=request_id,
         ),
     )
@@ -2195,9 +2268,7 @@ def claim_agent_signal(signal_id: str, ctx: Context) -> AgentSignalToolResult:
         signal_id=signal_id,
         status_transition="pending->claimed",
         operation=lambda runtime, request_id: AgentSignalToolResult(
-            signal=_agent_signal_inbox(runtime).claim(
-                signal_id, principal_id=active_principal().id
-            ),
+            signal=_claim_authorized_signal(runtime, signal_id),
             request_id=request_id,
         ),
     )
@@ -2218,7 +2289,8 @@ def complete_agent_signal(
         signal_id=signal_id,
         status_transition="claimed->completed",
         operation=lambda runtime, request_id: AgentSignalToolResult(
-            signal=_agent_signal_inbox(runtime).complete(
+            signal=_complete_authorized_signal(
+                runtime,
                 signal_id,
                 completion_summary=completion_summary,
                 outcome_metadata=outcome_metadata,
@@ -2240,7 +2312,7 @@ def dismiss_agent_signal(
         signal_id=signal_id,
         status_transition="pending|claimed->dismissed",
         operation=lambda runtime, request_id: AgentSignalToolResult(
-            signal=_agent_signal_inbox(runtime).dismiss(signal_id, reason=reason),
+            signal=_dismiss_authorized_signal(runtime, signal_id, reason=reason),
             request_id=request_id,
         ),
     )
@@ -2256,7 +2328,7 @@ def release_agent_signal(signal_id: str, ctx: Context) -> AgentSignalToolResult:
         signal_id=signal_id,
         status_transition="claimed->pending",
         operation=lambda runtime, request_id: AgentSignalToolResult(
-            signal=_agent_signal_inbox(runtime).release(signal_id),
+            signal=_release_authorized_signal(runtime, signal_id),
             request_id=request_id,
         ),
     )
