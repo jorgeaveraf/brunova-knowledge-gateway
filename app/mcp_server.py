@@ -10,6 +10,7 @@ from typing import Any, Literal, TypeVar
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
 from mcp.types import Tool as MCPTool
@@ -42,6 +43,7 @@ from app.agent_signals import (
 )
 from app.artifact_refs import ArtifactReferenceCodec
 from app.audit import correlation_id, emit_audit_record
+from app.acquisition import TOOLS as ACQUISITION_TOOLS, register_acquisition_tools
 from app.auth.principals import (
     CapabilityScope,
     active_principal,
@@ -359,6 +361,11 @@ class BrunovaMCPServer(MCPServer):
         is_n8n = name.startswith("n8n_") and name not in {"n8n_status", "n8n_list_tools"}
         is_openwa = name.startswith("openwa_") and name not in {"openwa_status", "openwa_list_tools"}
         if not is_n8n and not is_openwa:
+            if name in ACQUISITION_TOOLS:
+                try:
+                    return await super().call_tool(name, arguments, context)
+                except ToolError:
+                    return CallToolResult(content=[TextContent(type="text", text="ACQUISITION_VALIDATION_FAILED: bounded arguments required.")], is_error=True)
             return await super().call_tool(name, arguments, context)
         if is_openwa:
             return await self._call_openwa_tool(name, arguments, context)
@@ -552,6 +559,8 @@ TOOL_CAPABILITIES: dict[str, str] = {
 
 
 def _tool_provider(name: str) -> str:
+    if name.startswith("acquisition_"):
+        return "acquisition"
     if "agent_signal" in name:
         return "agent_signals"
     if name.startswith("hubspot_"):
@@ -596,6 +605,8 @@ def _principal_can_see_tool(
 
 
 def _tool_authorization_error(principal: Any, name: str) -> str | None:
+    if name.startswith("acquisition_"):
+        return None if principal.type == "management" and name in ACQUISITION_TOOLS else "tool_denied"
     if principal.type == "management":
         return None
     if principal.type == "signal_worker":
@@ -2682,6 +2693,8 @@ transport_security = TransportSecuritySettings(
     ),
     allowed_origins=_csv_environment("MCP_ALLOWED_ORIGINS"),
 )
+
+register_acquisition_tools(mcp_server)
 
 mcp_http_app = mcp_server.streamable_http_app(
     streamable_http_path="/",

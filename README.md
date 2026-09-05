@@ -2,6 +2,27 @@
 
 Gateway seguro para agentes de Brunova.
 
+## Acquisition 3H (integrated calibration in progress)
+
+Pancracio management tools `acquisition_*` call Portal Backend's existing bounded
+Engine Control Contract routes, never PostgreSQL. Eleven narrow tools cover Cycle,
+Accounts/detail, priority, Attention/detail/counts, Work, health and research requests.
+Paged reads retain cursors/limits; priority/Attention retain the Engine's ordered
+50-item bound. DTOs and epistemic distinctions are returned without reinterpretation.
+The existing management principal alone sees these tools; developer/signal-worker
+principals cannot invoke them. Human Attention dispositions are not exposed.
+
+Runtime `ACQUISITION_PORTAL_ORIGIN` must be an HTTPS origin;
+`ACQUISITION_PORTAL_SERVICE_TOKEN` comes from Secret Manager. It is a dedicated
+least-privilege Portal service credential, never a Human cookie or Gateway management
+token. Portal fixes caller provenance to PANCRACIO_GATEWAY / pancracio:gateway.
+Requests are bounded, do not follow redirects or retry automatically, and fail
+without direct-DB fallback. Retry a command with its exact original ID/payload.
+Only Portal publishes the existing acquisition wake Signal after Engine acceptance.
+Signal validation admits the exact service actor alongside existing Human provenance.
+No Acquisition business data, cache, policy or lifecycle authority is stored here.
+Production-component calibration is still required before marking 3H COMPLETE.
+
 Responsabilidad:
 
 - exponer capacidades controladas para agentes;

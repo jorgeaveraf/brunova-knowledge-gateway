@@ -127,8 +127,10 @@ class AgentSignalPayload(BaseModel):
         elif self.signal_type == "acquisition_work_available":
             if self.source != "brunova_acquisition_portal":
                 raise ValueError("Acquisition wake signals have an invalid source")
-            if self.actor_type != "HUMAN_PORTAL" or self.actor_id is None:
-                raise ValueError("Acquisition wake signals require Human actor provenance")
+            if self.actor_type not in {"HUMAN_PORTAL", "PANCRACIO_GATEWAY"} or self.actor_id is None:
+                raise ValueError("Acquisition wake signals require Portal-authenticated actor provenance")
+            if self.actor_type == "PANCRACIO_GATEWAY" and self.actor_id != "pancracio:gateway":
+                raise ValueError("Acquisition wake signals have an invalid service actor")
             if self.reason != {"code": "authoritative_work_available"}:
                 raise ValueError("Acquisition wake signals have an invalid reason")
             if self.metadata != {}:
