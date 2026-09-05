@@ -1131,3 +1131,7 @@ Delete rule limited to noncurrent generations under `agent-signals/items/`
 after an inventory-before/after comparison proved existing object generations
 unchanged. Terminal live Signal cleanup remains 30-day lazy cleanup. The test
 bucket was deleted after verification.
+
+### Increment 4 — synthetic Buyer / Message dry run
+
+`acquisition_get_buyer_dry_run` and `acquisition_request_buyer_dry_run` add bounded management-only inspection/preparation through the existing service-authenticated Portal Backend. No PostgreSQL path or local Buyer/Message state. Requests use fixed synthetic manual-source keys, current Attention version and exact retry identity; the Engine requires prior Human CONTINUE. Unknown arguments, arbitrary emails, Human edits/approval and send are unavailable. Reads preserve Engine claims, evidence, messageability and PREVIEW_ONLY currency without reinterpretation. Existing opaque work Signals remain unchanged. No enrichment/LLM/email/HubSpot provider is activated.

@@ -22,7 +22,7 @@ TOOLS = frozenset({
     "acquisition_list_cycles", "acquisition_get_cycle", "acquisition_list_accounts",
     "acquisition_get_account", "acquisition_list_priorities", "acquisition_list_attention",
     "acquisition_get_attention", "acquisition_get_attention_counts", "acquisition_list_work",
-    "acquisition_get_health", "acquisition_request_research",
+    "acquisition_get_health", "acquisition_request_research", "acquisition_get_buyer_dry_run", "acquisition_request_buyer_dry_run",
 })
 
 
@@ -64,7 +64,7 @@ async def portal_request(method: str, path: str, *, params: dict | None = None,
                         if 200 <= status < 300:
                             payload, code = data, None
                         else:
-                            candidate = data.get("code") or (data.get("problem") or {}).get("code")
+                            candidate = data.get("code") or data.get("problemCode") or (data.get("problem") or {}).get("code")
                             code = candidate if isinstance(candidate, str) and re.fullmatch(r"[A-Z_]{1,80}", candidate) else "ACQUISITION_REQUEST_FAILED"
                             # Error bodies are not trusted content. Preserve status/code,
                             # never expose upstream text, credentials or stack traces.
@@ -80,6 +80,22 @@ async def portal_request(method: str, path: str, *, params: dict | None = None,
 
 
 def register_acquisition_tools(server: Any) -> None:
+    @server.tool()
+    async def acquisition_get_buyer_dry_run(cycle_id: Identifier, account_id: Identifier) -> CallToolResult:
+        """Read Engine buyer/contact evidence, messageability, claims and last ten immutable drafts. PREVIEW_ONLY is never send authority; stale packages are not READY."""
+        return await portal_request("GET", f"/cycles/{cycle_id}/accounts/{account_id}/buyer-dry-run")
+
+    @server.tool()
+    async def acquisition_request_buyer_dry_run(command_id: Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")],
+                                               cycle_id: Identifier, account_id: Identifier,
+                                               expected_attention_version: Annotated[int, Field(ge=1)],
+                                               source_key: Literal["clean", "unresolved", "claim-trap", "suppressed", "ambiguous", "stale", "guessed"]) -> CallToolResult:
+        """Request synthetic manual-source Buyer/Message dry run only after Human CONTINUE/current priority. No arbitrary person/email, Human edit, approval or send. Retry exact command ID; acceptance is not completion."""
+        return await portal_request("POST", "/commands/request-buyer-dry-run", body={
+            "commandId": command_id, "cycleId": cycle_id, "accountId": account_id,
+            "expectedAttentionVersion": expected_attention_version, "sourceKey": source_key,
+        })
+
     @server.tool()
     async def acquisition_list_cycles(status: Literal["DESIGN", "CALIBRATION", "ACTIVE", "REVIEW", "CLOSED"] | None = None,
                                       limit: PageLimit = 25, cursor: Cursor | None = None) -> CallToolResult:

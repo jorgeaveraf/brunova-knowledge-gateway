@@ -530,7 +530,7 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
         "acquisition_list_cycles", "acquisition_get_cycle", "acquisition_list_accounts",
         "acquisition_get_account", "acquisition_list_priorities", "acquisition_list_attention",
         "acquisition_get_attention", "acquisition_get_attention_counts", "acquisition_list_work",
-        "acquisition_get_health", "acquisition_request_research",
+        "acquisition_get_health", "acquisition_request_research", "acquisition_get_buyer_dry_run", "acquisition_request_buyer_dry_run",
         "list_sources",
         "list_source_documents",
         "retrieve_document",

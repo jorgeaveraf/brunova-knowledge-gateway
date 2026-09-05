@@ -95,3 +95,25 @@ def test_signal_accepts_only_canonical_service_provenance():
     body["actor_id"] = "spoof"
     with pytest.raises(ValueError):
         AgentSignalPayload.model_validate(body)
+
+
+def test_buyer_dry_run_is_bounded_indirect_and_never_human_edit_or_send(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if request.method == "POST":
+            body = json.loads(request.content)
+            assert set(body) == {"commandId", "cycleId", "accountId", "expectedAttentionVersion", "sourceKey"}
+            return httpx.Response(409, json={"problemCode": "STALE_ATTENTION_VERSION"})
+        return httpx.Response(200, json={"package": {"current": False, "messageability": "HOLD", "preview": {"status": "PREVIEW_ONLY", "executable": False}}})
+    configure(monkeypatch, handler)
+    args = {"command_id": "buyer-test", "cycle_id": "c", "account_id": "a", "expected_attention_version": 2, "source_key": "clean"}
+    result = unpack(asyncio.run(mcp_server.call_tool("acquisition_request_buyer_dry_run", args)))
+    assert result["httpStatus"] == 409
+    assert result["data"]["code"] == "STALE_ATTENTION_VERSION"
+    before = len(calls)
+    for extra in [{"email": "guess@example.com"}, {"edit_text": "Human impersonation"}, {"caller_type": "HUMAN_PORTAL"}]:
+        assert asyncio.run(mcp_server.call_tool("acquisition_request_buyer_dry_run", args | extra)).is_error
+    assert len(calls) == before
+    result = unpack(asyncio.run(mcp_server.call_tool("acquisition_get_buyer_dry_run", {"cycle_id": "c", "account_id": "a"})))
+    assert result["data"]["package"]["preview"]["executable"] is False

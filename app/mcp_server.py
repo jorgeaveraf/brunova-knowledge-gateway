@@ -363,6 +363,12 @@ class BrunovaMCPServer(MCPServer):
         if not is_n8n and not is_openwa:
             if name in ACQUISITION_TOOLS:
                 try:
+                    buyer_fields = {
+                        "acquisition_get_buyer_dry_run": {"cycle_id", "account_id"},
+                        "acquisition_request_buyer_dry_run": {"command_id", "cycle_id", "account_id", "expected_attention_version", "source_key"},
+                    }
+                    if name in buyer_fields and set(arguments or {}) - buyer_fields[name]:
+                        raise ToolError("unexpected_buyer_argument")
                     return await super().call_tool(name, arguments, context)
                 except ToolError:
                     return CallToolResult(content=[TextContent(type="text", text="ACQUISITION_VALIDATION_FAILED: bounded arguments required.")], is_error=True)
