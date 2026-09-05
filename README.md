@@ -2,7 +2,7 @@
 
 Gateway seguro para agentes de Brunova.
 
-## Acquisition 3H (integrated calibration in progress)
+## Acquisition 3H — COMPLETE (2026-09-05)
 
 Pancracio management tools `acquisition_*` call Portal Backend's existing bounded
 Engine Control Contract routes, never PostgreSQL. Eleven narrow tools cover Cycle,
@@ -21,7 +21,14 @@ without direct-DB fallback. Retry a command with its exact original ID/payload.
 Only Portal publishes the existing acquisition wake Signal after Engine acceptance.
 Signal validation admits the exact service actor alongside existing Human provenance.
 No Acquisition business data, cache, policy or lifecycle authority is stored here.
-Production-component calibration is still required before marking 3H COMPLETE.
+Production-component calibration passed on revision `00057-qvv` (`70a093e`).
+Real Human and Gateway DTOs matched, including five epistemic categories and
+Human HOLD/refill. Agent requests produced durably stored Signals and one-attempt
+Mac research execution; the correlation fix is in Engine, not Gateway truth logic.
+279 Gateway tests pass. Isolated synthetic DB/routing was removed; both surfaces
+now observe empty production with disabled gates. Completed Signals retain normal
+audit/retention. No new paid service, shadow business state or outbound action.
+The Engine implementation plan records the full 3H trace and calibration results.
 
 Responsabilidad:
 
