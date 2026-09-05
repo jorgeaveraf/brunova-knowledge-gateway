@@ -1085,3 +1085,21 @@ gcloud pubsub subscriptions update brunova-management-agent-signals \
 Antes de ejecutar ese cambio se debe comprobar backlog, retry, ack deadline,
 retención e IAM live. El Inbox no implementa wake-up, daemon local,
 notificaciones desktop ni polling de Codex.
+
+### Increment 3D production validation
+
+The deployed v0.29.0 Gateway accepts the minimal deterministic
+`acquisition_work_available` extension and persists it before the existing push
+subscription receives `204`. A bounded synthetic trace produced one durable
+Signal for two identical publications. The `acquisition_worker` principal saw
+only that extension, was denied an unrelated Signal, and exercised
+claim → release → claim → dismiss. Five generation-preconditioned states were
+preserved and the final live state is `dismissed`; no Engine worker was started.
+
+Before the production bucket change, an isolated regional test bucket proved
+version replacement, exact generation deletion, seven-day soft delete metadata,
+and the resulting final-delete time. The production bucket then received one
+Delete rule limited to noncurrent generations under `agent-signals/items/`
+after an inventory-before/after comparison proved existing object generations
+unchanged. Terminal live Signal cleanup remains 30-day lazy cleanup. The test
+bucket was deleted after verification.
