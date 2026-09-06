@@ -527,6 +527,8 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
     result = run(scenario())
 
     assert {tool.name for tool in result.tools} == {
+        "acquisition_list_crm", "acquisition_request_pre_outbound_sync", "acquisition_request_crm_reconciliation",
+        "acquisition_review_commercial_handoff", "acquisition_accept_commercial_handoff",
         "acquisition_list_cycles", "acquisition_get_cycle", "acquisition_list_accounts",
         "acquisition_get_account", "acquisition_list_priorities", "acquisition_list_attention",
         "acquisition_get_attention", "acquisition_get_attention_counts", "acquisition_list_work",

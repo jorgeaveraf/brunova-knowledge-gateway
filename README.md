@@ -2,6 +2,17 @@
 
 Gateway seguro para agentes de Brunova.
 
+## Acquisition CRM boundary (Increment 6)
+
+Five narrow tools expose Engine truth through Portal Backend only:
+`acquisition_list_crm`, `acquisition_request_pre_outbound_sync`,
+`acquisition_request_crm_reconciliation`, `acquisition_review_commercial_handoff`,
+and `acquisition_accept_commercial_handoff`. All mutations require the existing
+exact admitted Management objective. Reads retain Engine status, immutable mapping
+IDs, bounded handoff history and authority-transfer meaning without interpretation.
+This Acquisition path has no direct HubSpot/DB access, Deal operation or send tool.
+Gateway stores no CRM business truth and cannot publish a wake on command bypass.
+
 ## Acquisition Management authority reconciliation (2026-09-06)
 
 Pancracio's Management identity is trusted, not inherently read/request-only.

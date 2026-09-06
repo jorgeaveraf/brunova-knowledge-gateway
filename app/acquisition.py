@@ -26,6 +26,8 @@ TOOLS = frozenset({
     "acquisition_record_attention_disposition", "acquisition_authorize_controlled_effect",
     "acquisition_request_effect_reconciliation", "acquisition_acknowledge_effect_attention", "acquisition_edit_message_draft",
     "acquisition_get_effect", "acquisition_get_effect_bindings", "acquisition_list_effect_attention",
+    "acquisition_list_crm", "acquisition_request_pre_outbound_sync", "acquisition_request_crm_reconciliation",
+    "acquisition_review_commercial_handoff", "acquisition_accept_commercial_handoff",
 })
 
 
@@ -86,6 +88,38 @@ def register_acquisition_tools(server: Any) -> None:
     async def management(operation, command_id, objective_reference, request):
         return await portal_request("POST", "/management-actions/" + operation, body={
             "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_list_crm(cycle_id: Identifier, account_id: Identifier | None = None,
+            status: Literal["READY", "IN_PROGRESS", "SYNCED", "RECONCILIATION_REQUIRED", "BLOCKED"] | None = None,
+            limit: Annotated[int, Field(ge=1, le=50)] = 20, after: Identifier | None = None) -> CallToolResult:
+        """Read authoritative bounded CRM mappings, association observations and handoff/authority transfer. Engine state is not a mirror of HubSpot commercial activity. Resolve Account IDs through bounded Account lookup; never query HubSpot directly."""
+        return await portal_request("GET", f"/cycles/{cycle_id}/crm", params={"accountId": account_id, "status": status, "limit": limit, "after": after})
+
+    @server.tool()
+    async def acquisition_request_pre_outbound_sync(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, account_id: Identifier) -> CallToolResult:
+        """Request exact CRM boundary admission under an admitted Management objective. Engine derives all readiness from PostgreSQL. May enqueue controlled synthetic Company/Contact work; no Deal, outreach or commercial activation. No caller-supplied eligibility or provider IDs."""
+        return await management("REQUEST_PRE_OUTBOUND_SYNC", command_id, objective_reference, {"cycleId": cycle_id, "accountId": account_id})
+
+    @server.tool()
+    async def acquisition_request_crm_reconciliation(command_id: Identifier, objective_reference: Identifier,
+            intent_id: Identifier, expected_version: Annotated[int, Field(ge=1)]) -> CallToolResult:
+        """Request CRM reconciliation under exact admitted objective/version. Lookup first; uncertain creates cannot be blindly repeated. No mapping reassignment or generic property patch."""
+        return await management("REQUEST_CRM_RECONCILIATION", command_id, objective_reference, {"intentId": intent_id, "expectedVersion": expected_version})
+
+    @server.tool()
+    async def acquisition_review_commercial_handoff(command_id: Identifier, objective_reference: Identifier,
+            handoff_id: Identifier, decision: Literal["RECOMMEND", "DECLINE"],
+            reason: Annotated[str, Field(min_length=1, max_length=1000)]) -> CallToolResult:
+        """Management review of QUESTION/UNKNOWN under admitted objective. Recommendation is not acceptance, opportunity or Deal creation. Preserve actual Agent provenance."""
+        return await management("REVIEW_COMMERCIAL_HANDOFF", command_id, objective_reference, {"handoffId": handoff_id, "decision": decision, "reason": reason})
+
+    @server.tool()
+    async def acquisition_accept_commercial_handoff(command_id: Identifier, objective_reference: Identifier,
+            handoff_id: Identifier, reason: Annotated[str, Field(min_length=1, max_length=1000)]) -> CallToolResult:
+        """Accept a supported handoff under an admitted objective. Transfers Human commercial follow-up authority to HubSpot and blocks autonomous pre-Human progression. Never creates a Deal or impersonates Human."""
+        return await management("ACCEPT_COMMERCIAL_HANDOFF", command_id, objective_reference, {"handoffId": handoff_id, "reason": reason})
 
     @server.tool()
     async def acquisition_record_attention_disposition(command_id: Identifier, objective_reference: Identifier,
