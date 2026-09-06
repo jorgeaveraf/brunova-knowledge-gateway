@@ -538,6 +538,7 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
         "list_source_documents",
         "retrieve_document",
         "retrieve_sheet_range",
+        "inspect_sheet_validation",
         "discover_source_candidates",
         "get_source_candidate_details",
         "create_source_proposal",
@@ -2540,3 +2541,160 @@ def test_mcp_propagates_resource_not_in_source_error(monkeypatch):
     assert result.is_error is True
     assert "resource_not_in_source" in result.content[0].text
     assert audit.call_args.kwargs["error_code"] == "resource_not_in_source"
+
+
+def test_validation_tool_governed_source_reads_and_opaque_provenance(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    codec = gateway_runtime.artifact_reference_codec
+    args = {
+        "source_id": "career_ops",
+        "artifact_ref": codec.encode(
+            source_id="career_ops", artifact_id="spreadsheet_12345"
+        ),
+        "sheet_ref": codec.encode_sheet(
+            source_id="career_ops", artifact_id="spreadsheet_12345", sheet_id="7"
+        ),
+        "range": "A23",
+    }
+
+    def validation(resource, *, range_name, read_source):
+        assert range_name == "'Summary'!A23:A23"
+        values = read_source("'Data'!A1:A2").values
+        return {
+            "spreadsheet_id": resource.id,
+            "sheet_id": "7",
+            "sheet_title": "Summary",
+            "range": range_name,
+            "cells": [{"cell": "A23", "has_validation": True}],
+            "validation_sources": [
+                {"sheet_id": "8", "sheet_title": "Data", "resolved_values": values}
+            ],
+        }
+
+    gateway_runtime.sheets_adapter.get_validation = Mock(side_effect=validation)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            result = await client.call_tool("inspect_sheet_validation", args)
+            rejected = []
+            for changes in [
+                {
+                    "sheet_ref": codec.encode_sheet(
+                        source_id="career_ops",
+                        artifact_id="other_artifact",
+                        sheet_id="7",
+                    )
+                },
+                {
+                    "sheet_ref": codec.encode_sheet(
+                        source_id="other_source",
+                        artifact_id="spreadsheet_12345",
+                        sheet_id="7",
+                    )
+                },
+                {
+                    "sheet_ref": codec.encode_sheet(
+                        source_id="career_ops",
+                        artifact_id="spreadsheet_12345",
+                        sheet_id="999",
+                    )
+                },
+                {"range": "Data!A1:A2"},
+                {"range": "A:A"},
+                {"range": "A1:Z100"},
+            ]:
+                rejected.append(
+                    await client.call_tool(
+                        "inspect_sheet_validation", {**args, **changes}
+                    )
+                )
+            return result, rejected
+
+    result, rejected = run(scenario())
+    assert not result.is_error
+    assert all(r.is_error for r in rejected)
+    assert "spreadsheet_id" not in result.structured_content
+    origin = result.structured_content["validation_sources"][0]
+    assert "sheet_id" not in origin
+    assert (
+        codec.decode_sheet(
+            origin["sheet_ref"], source_id="career_ops", artifact_id="spreadsheet_12345"
+        )
+        == "8"
+    )
+    assert gateway_runtime.sheets_adapter.ranges[-1][1] == "'Data'!A1:A2"
+    gateway_runtime.sheets_adapter.get_validation.assert_called_once()
+    assert gateway_runtime.sheets_adapter.operations == []
+
+
+def test_validation_tool_denies_resource_outside_source(monkeypatch):
+    gateway_runtime = runtime(in_source=False)
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    gateway_runtime.sheets_adapter.get_validation = Mock()
+    codec = gateway_runtime.artifact_reference_codec
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            return await client.call_tool(
+                "inspect_sheet_validation",
+                {
+                    "source_id": "career_ops",
+                    "artifact_ref": codec.encode(
+                        source_id="career_ops", artifact_id="spreadsheet_12345"
+                    ),
+                    "sheet_ref": codec.encode_sheet(
+                        source_id="career_ops",
+                        artifact_id="spreadsheet_12345",
+                        sheet_id="7",
+                    ),
+                    "range": "A23",
+                },
+            )
+
+    assert run(scenario()).is_error
+    gateway_runtime.sheets_adapter.get_validation.assert_not_called()
+
+
+def test_validation_tool_requires_principal_read_and_source_scope(monkeypatch):
+    gateway_runtime = runtime()
+    monkeypatch.setattr(mcp_module, "get_runtime_gateway", lambda: gateway_runtime)
+    gateway_runtime.sheets_adapter.get_validation = Mock()
+    codec = gateway_runtime.artifact_reference_codec
+    args = {
+        "source_id": "career_ops",
+        "artifact_ref": codec.encode(
+            source_id="career_ops", artifact_id="spreadsheet_12345"
+        ),
+        "sheet_ref": codec.encode_sheet(
+            source_id="career_ops", artifact_id="spreadsheet_12345", sheet_id="7"
+        ),
+        "range": "A23",
+    }
+
+    async def scenario():
+        results = []
+        for sources, read in [
+            (frozenset({"career_ops"}), False),
+            (frozenset({"elsewhere"}), True),
+        ]:
+            principal = Principal(
+                id="developer_test",
+                type="developer",
+                status="active",
+                providers=ProviderScope(workspace=True),
+                sources=sources,
+                capabilities=CapabilityScope(read=read),
+            )
+            token = bind_principal(principal)
+            try:
+                async with Client(mcp_module.mcp_server) as client:
+                    results.append(
+                        await client.call_tool("inspect_sheet_validation", args)
+                    )
+            finally:
+                reset_principal(token)
+        return results
+
+    assert all(r.is_error for r in run(scenario()))
+    gateway_runtime.sheets_adapter.get_validation.assert_not_called()

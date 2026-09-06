@@ -1161,3 +1161,45 @@ bucket was deleted after verification.
 ### Increment 4 — synthetic Buyer / Message dry run
 
 `acquisition_get_buyer_dry_run` and `acquisition_request_buyer_dry_run` add bounded management-only inspection/preparation through the existing service-authenticated Portal Backend. No PostgreSQL path or local Buyer/Message state. Requests use fixed synthetic manual-source keys, current Attention version and exact retry identity; the Engine requires prior Human CONTINUE. Unknown arguments, arbitrary emails, Human edits/approval and send are unavailable. Reads preserve Engine claims, evidence, messageability and PREVIEW_ONLY currency without reinterpretation. Existing opaque work Signals remain unchanged. No enrichment/LLM/email/HubSpot provider is activated.
+
+
+### Google Sheets validation introspection (v0.30.0)
+
+`inspect_sheet_validation(source_id, artifact_ref, sheet_ref, range)` is a
+read-only MCP capability for governed register writes and Agent preflight.
+Resolve the spreadsheet with `resolve_source_artifact` and select the opaque
+`sheet_ref` from `inspect_spreadsheet_structure`. Supply a local bounded A1
+rectangle or single cell (e.g. `A23:S23` or `J23`). The existing Workspace
+principal, source authorization, delegated credentials and audit path apply.
+
+Every requested cell reports `has_validation`. Rules expose `criterion`, original
+`condition_values`, explicit `allowed_values` for `ONE_OF_LIST`, `strict`,
+`input_semantics` (`reject_input` or `warning`) and `help_text`. Other criteria
+(number/date/text/boolean/custom formula) retain metadata; their domains are
+`not_enumerated`, and formulas are never executed by the Gateway.
+
+`ONE_OF_RANGE` points to `validation_sources[validation_source_index]`, preserving
+`source_range`, `resolved_range`, source sheet title and opaque `sheet_ref` within
+the returned spreadsheet `artifact_ref`. The existing governed values reader
+resolves current formatted values, deduplicating values and omitting empty cells.
+An empty source is `resolved` with `resolved_values: []`; inaccessible, unsupported
+or oversized sources are `unresolved`, with a stable `error_code` and null values.
+Never infer values from neighboring rows or treat unresolved as unrestricted.
+
+Targets are limited by `WORKSPACE_SHEET_MAX_CELLS`; distinct source reads share a
+separate budget of that many cells, with at most 50 source reads per invocation.
+Open column references are bounded by the source grid and rejected if too large,
+never silently truncated. Named ranges, computed references, external workbooks,
+validation editing and unrelated workbook internals are outside this capability.
+
+This is a read-time observation, not an atomic snapshot or concurrency token.
+Validation describes what Sheets permits, not authority to change Registry
+taxonomy. Existing mutation behavior, formulas and structure are unchanged. The current
+Sheets mutation API has no explicit revision token; existing revision checks in
+other Workspace paths are unaffected. Pancracio must still supply an authorized value and use
+the existing governed mutation flow; this capability never chooses or writes one.
+
+Provider contract: [Google Sheets DataValidationRule](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/cells#DataValidationRule)
+and [bounded spreadsheets.get field masks](https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get).
+
+Read-only Registry verification: [production proof](docs/sheets-validation-production-proof.md).

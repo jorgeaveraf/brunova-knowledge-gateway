@@ -16,6 +16,8 @@ from mcp.types import CallToolResult, TextContent
 from mcp.types import Tool as MCPTool
 from pydantic import BaseModel
 
+from app.acquisition import TOOLS as ACQUISITION_TOOLS
+from app.acquisition import register_acquisition_tools
 from app.adapters.google_workspace.errors import WorkspaceAdapterError
 from app.adapters.google_workspace.models import (
     ArtifactConversionTarget,
@@ -43,7 +45,6 @@ from app.agent_signals import (
 )
 from app.artifact_refs import ArtifactReferenceCodec
 from app.audit import correlation_id, emit_audit_record
-from app.acquisition import TOOLS as ACQUISITION_TOOLS, register_acquisition_tools
 from app.auth.principals import (
     CapabilityScope,
     active_principal,
@@ -84,6 +85,7 @@ from app.knowledge import (
     inspect_authorized_document_structure,
     inspect_authorized_document_tab,
     inspect_authorized_docx_structure,
+    inspect_authorized_sheet_validation,
     inspect_authorized_source_artifacts,
     inspect_authorized_spreadsheet_structure,
     inspect_authorized_visual_asset,
@@ -243,6 +245,17 @@ class SpreadsheetRangeToolResult(BaseModel):
     values: list[list[object]]
     request_id: str
     source: SourceMetadata | None = None
+
+
+class SheetValidationToolResult(BaseModel):
+    artifact_ref: str
+    sheet_ref: str
+    sheet_title: str
+    range: str
+    cells: list[dict[str, Any]]
+    validation_sources: list[dict[str, Any]]
+    request_id: str
+    source: SourceMetadata
 
 
 class DocumentTabInspectionToolResult(DocumentTabInspectionResult):
@@ -548,6 +561,7 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "inspect_source_artifacts": "read",
     "retrieve_document": "read",
     "retrieve_sheet_range": "read",
+    "inspect_sheet_validation": "read",
     "inspect_visual_asset": "read",
     "inspect_docx_structure": "read",
     "validate_docx_structure": "read",
@@ -652,7 +666,7 @@ def _approval_reference(context: Context | None) -> str | None:
 
 mcp_server = BrunovaMCPServer(
     name="brunova-knowledge-gateway",
-    version="0.29.0",
+    version="0.30.0",
     instructions=(
         "Use only the capabilities and sources exposed in this authenticated "
         "principal's tool catalog. Mutations remain capability-gated and keep "
@@ -2057,6 +2071,43 @@ def retrieve_sheet_range(
         resource_id=artifact_ref,
         resource_type="google_sheet",
     )
+
+
+@mcp_server.tool()
+def inspect_sheet_validation(
+    source_id: str,
+    artifact_ref: str,
+    sheet_ref: str,
+    range: str,
+    ctx: Context,
+) -> SheetValidationToolResult:
+    """Inspect validation for a bounded local A1 cell/range. Resolve list domains through governed reads. Unresolved domains must never be guessed. This read grants no authority to change taxonomy or validation and is not a write concurrency token."""
+
+    def operation(
+        runtime: KnowledgeRuntime, request_id: str
+    ) -> SheetValidationToolResult:
+        _, result = inspect_authorized_sheet_validation(
+            registry=runtime.registry,
+            source_policy=runtime.source_policy,
+            workspace_adapter=runtime.workspace_adapter,
+            sheets_adapter=runtime.sheets_adapter,
+            reference_codec=_reference_codec(runtime),
+            source_id=source_id,
+            artifact_ref=artifact_ref,
+            sheet_ref=sheet_ref,
+            range_name=range,
+        )
+        return SheetValidationToolResult(**result, request_id=request_id)
+
+    return _execute_tool(
+        ctx=ctx,
+        action="inspect_sheet_validation",
+        operation=operation,
+        source_id=source_id,
+        resource_id=artifact_ref,
+        resource_type="google_sheet",
+    )
+
 
 
 async def _execute_hubspot_tool(

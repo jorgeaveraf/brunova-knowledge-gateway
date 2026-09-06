@@ -2029,3 +2029,93 @@ def retrieve_authorized_sheet_range_by_id(
             )
         }
     )
+
+
+def inspect_authorized_sheet_validation(
+    *,
+    registry: SourceRegistry,
+    source_policy: SourceAccessPolicy,
+    workspace_adapter: GoogleWorkspaceAdapter,
+    sheets_adapter: GoogleSheetsAdapter,
+    reference_codec: ArtifactReferenceCodec,
+    source_id: str,
+    artifact_ref: str,
+    sheet_ref: str,
+    range_name: str,
+) -> tuple[SourceDefinition, dict]:
+    """Read a local A1 range from an opaque, spreadsheet-bound sheet handle."""
+
+    source = registered_source(registry, source_id)
+    allowed_source = source_policy.authorize_source(source)
+    resource = _resource_from_reference(
+        reference_codec,
+        workspace_adapter,
+        source_policy,
+        allowed_source,
+        source_id,
+        artifact_ref,
+    )
+    if resource.mime_type != GOOGLE_SHEET_MIME_TYPE:
+        raise WorkspaceAdapterError(
+            "resource_type_invalid",
+            "The requested resource is not a native Google Sheet.",
+            422,
+        )
+    from app.adapters.google_workspace.validation import bounded_validation_range
+
+    safe_range = bounded_validation_range(
+        range_name, max_cells=sheets_adapter.max_cells
+    ).value
+    parsed = SpreadsheetMutationPolicy.parse_range(
+        safe_range, max_cells=sheets_adapter.max_cells
+    )
+    if parsed.sheet_title:
+        raise WorkspaceAdapterError(
+            "spreadsheet_range_invalid",
+            "Use a local bounded A1 range and select the sheet with sheet_ref.",
+            422,
+        )
+    sheet_id = reference_codec.decode_sheet(
+        sheet_ref, source_id=source_id, artifact_id=resource.id
+    )
+    sheets = sheets_adapter.get_structure(resource).get("sheets", [])
+    sheet = next(
+        (item for item in sheets if str(item.get("sheet_id")) == sheet_id), None
+    )
+    if sheet is None:
+        raise WorkspaceAdapterError(
+            "spreadsheet_sheet_reference_invalid",
+            "The sheet reference is invalid for the selected spreadsheet.",
+            403,
+        )
+    title = str(sheet["title"])
+    qualified_range = f"'{title.replace(chr(39), chr(39) * 2)}'!{safe_range}"
+
+    def read_source(source_range):
+        source_policy.authorize_resource_for_source(resource, allowed_source)
+        bounded = ContentReadPolicy.validate_sheet_range(
+            source_range, max_cells=sheets_adapter.max_cells
+        )
+        return sheets_adapter.get_range(resource, range_name=bounded)
+
+    result = sheets_adapter.get_validation(
+        resource, range_name=qualified_range, read_source=read_source
+    )
+    result.pop("spreadsheet_id")
+    result.pop("sheet_id")
+    for origin in result["validation_sources"]:
+        if "sheet_id" in origin:
+            origin["sheet_ref"] = reference_codec.encode_sheet(
+                source_id=source_id,
+                artifact_id=resource.id,
+                sheet_id=origin.pop("sheet_id"),
+            )
+    result.update(
+        artifact_ref=artifact_ref,
+        sheet_ref=sheet_ref,
+        range=safe_range,
+        source=SourceMetadata(
+            id=source.id, name=source.name, classification=source.classification
+        ).model_dump(mode="json"),
+    )
+    return source, result

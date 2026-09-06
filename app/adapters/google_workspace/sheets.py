@@ -72,6 +72,22 @@ class GoogleSheetsAdapter:
                 503,
             ) from error
 
+    def get_validation(
+        self, resource: WorkspaceResource, *, range_name: str, read_source
+    ) -> dict[str, Any]:
+        """Read only bounded validation metadata using existing delegated credentials."""
+        from app.adapters.google_workspace.validation import inspect_cells
+
+        self._validate_native_sheet(resource)
+        try:
+            return inspect_cells(self, resource, range_name, read_source)
+        except (GoogleAuthError, HttpError) as error:
+            raise map_google_error(error) from error
+        except OSError as error:
+            raise WorkspaceAdapterError(
+                "credentials_unavailable", "Workspace credentials are unavailable.", 503
+            ) from error
+
     def get_structure(self, resource: WorkspaceResource) -> dict[str, Any]:
         """Return only allowlisted spreadsheet and grid metadata."""
 
