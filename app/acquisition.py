@@ -23,6 +23,9 @@ TOOLS = frozenset({
     "acquisition_get_account", "acquisition_list_priorities", "acquisition_list_attention",
     "acquisition_get_attention", "acquisition_get_attention_counts", "acquisition_list_work",
     "acquisition_get_health", "acquisition_request_research", "acquisition_get_buyer_dry_run", "acquisition_request_buyer_dry_run",
+    "acquisition_record_attention_disposition", "acquisition_authorize_controlled_effect",
+    "acquisition_request_effect_reconciliation", "acquisition_acknowledge_effect_attention", "acquisition_edit_message_draft",
+    "acquisition_get_effect", "acquisition_get_effect_bindings", "acquisition_list_effect_attention",
 })
 
 
@@ -80,6 +83,67 @@ async def portal_request(method: str, path: str, *, params: dict | None = None,
 
 
 def register_acquisition_tools(server: Any) -> None:
+    async def management(operation, command_id, objective_reference, request):
+        return await portal_request("POST", "/management-actions/" + operation, body={
+            "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_record_attention_disposition(command_id: Identifier, objective_reference: Identifier,
+            attention_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
+            disposition: Literal["CONTINUE", "HOLD", "REJECT"], reason: Annotated[str, Field(min_length=1,max_length=1000)],
+            notes: Annotated[str, Field(max_length=2000)] = "") -> CallToolResult:
+        """Management decision under an admitted Human objective, not token-only autonomy. Preserve PANCRACIO_GATEWAY provenance, exact version and retry identity. No gate activation."""
+        return await management("RECORD_ATTENTION_DISPOSITION", command_id, objective_reference, {
+            "attentionId": attention_id, "expectedVersion": expected_version, "disposition": disposition, "reason": reason, "notes": notes})
+
+    @server.tool()
+    async def acquisition_authorize_controlled_effect(command_id: Identifier, objective_reference: Identifier,
+            message_id: Identifier, target_id: Identifier, sender_id: Identifier,
+            expected_binding_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            expires_at: Annotated[str, Field(min_length=20,max_length=40)]) -> CallToolResult:
+        """Authorize only an exact controlled effect covered by an admitted objective and current policy. This may enqueue real controlled work; never invoke without applicable Human authority. Commercial transport remains unapproved. Not a send or transport tool."""
+        return await management("AUTHORIZE_EFFECT", command_id, objective_reference, {
+            "messageId": message_id, "targetId": target_id, "senderId": sender_id,
+            "expectedBindingHash": expected_binding_hash, "expiresAt": expires_at})
+
+    @server.tool()
+    async def acquisition_request_effect_reconciliation(command_id: Identifier, objective_reference: Identifier, intent_id: Identifier) -> CallToolResult:
+        """Request bounded lookup-only reconciliation under an admitted objective. Never resend UNKNOWN work or reset total attempts."""
+        return await management("REQUEST_EFFECT_RECONCILIATION", command_id, objective_reference, {"intentId": intent_id})
+
+    @server.tool()
+    async def acquisition_acknowledge_effect_attention(command_id: Identifier, objective_reference: Identifier,
+            attention_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
+            reason: Annotated[str, Field(min_length=1,max_length=1000)]) -> CallToolResult:
+        """Acknowledge bounded Management Attention under an admitted objective. Does not send, approve commercial outreach or hand off CRM ownership."""
+        return await management("ACKNOWLEDGE_EFFECT_ATTENTION", command_id, objective_reference, {
+            "attentionId": attention_id, "expectedVersion": expected_version, "reason": reason})
+
+    @server.tool()
+    async def acquisition_edit_message_draft(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, account_id: Identifier, expected_attention_version: Annotated[int, Field(ge=1)],
+            source_key: Literal["clean", "unresolved", "claim-trap", "suppressed", "ambiguous", "stale", "guessed"],
+            edit_text: Annotated[str, Field(min_length=1,max_length=4000)]) -> CallToolResult:
+        """Create a new synthetic draft version under an admitted objective. Claims are revalidated; an edit is never approval or send authority."""
+        return await management("EDIT_MESSAGE_DRAFT", command_id, objective_reference, {
+            "cycleId": cycle_id, "accountId": account_id, "expectedAttentionVersion": expected_attention_version,
+            "sourceKey": source_key, "editText": edit_text})
+
+    @server.tool()
+    async def acquisition_get_effect(intent_id: Identifier) -> CallToolResult:
+        """Read bounded authoritative effect status, exact authorization and observations; do not infer authorization from readiness."""
+        return await portal_request("GET", f"/effects/{intent_id}")
+
+    @server.tool()
+    async def acquisition_get_effect_bindings(message_id: Identifier) -> CallToolResult:
+        """Read exact current controlled bindings (maximum 25). Eligible is not permission to execute."""
+        return await portal_request("GET", f"/messages/{message_id}/controlled-test-bindings")
+
+    @server.tool()
+    async def acquisition_list_effect_attention(cycle_id: Identifier) -> CallToolResult:
+        """Read shared-capacity effect Attention (maximum 25), including items waiting for capacity."""
+        return await portal_request("GET", f"/cycles/{cycle_id}/effect-attention")
+
     @server.tool()
     async def acquisition_get_buyer_dry_run(cycle_id: Identifier, account_id: Identifier) -> CallToolResult:
         """Read Engine buyer/contact evidence, messageability, claims and last ten immutable drafts. PREVIEW_ONLY is never send authority; stale packages are not READY."""
@@ -90,7 +154,7 @@ def register_acquisition_tools(server: Any) -> None:
                                                cycle_id: Identifier, account_id: Identifier,
                                                expected_attention_version: Annotated[int, Field(ge=1)],
                                                source_key: Literal["clean", "unresolved", "claim-trap", "suppressed", "ambiguous", "stale", "guessed"]) -> CallToolResult:
-        """Request synthetic manual-source Buyer/Message dry run only after Human CONTINUE/current priority. No arbitrary person/email, Human edit, approval or send. Retry exact command ID; acceptance is not completion."""
+        """Request synthetic manual-source Buyer/Message dry run only after authorized CONTINUE/current priority. No arbitrary person/email or send. Edits use the separate objective-governed Management tool. Retry exact command ID; acceptance is not completion."""
         return await portal_request("POST", "/commands/request-buyer-dry-run", body={
             "commandId": command_id, "cycleId": cycle_id, "accountId": account_id,
             "expectedAttentionVersion": expected_attention_version, "sourceKey": source_key,
@@ -156,7 +220,7 @@ def register_acquisition_tools(server: Any) -> None:
                                             cycle_id: Identifier, account_id: Identifier,
                                             expected_lifecycle_version: Annotated[int, Field(ge=1)],
                                             reason: Annotated[str, Field(min_length=1, max_length=1000)]) -> CallToolResult:
-        """Request existing Engine research only when authorized. Reuse the exact command ID/payload for uncertain retries; conflict requires reading current truth. Acceptance is not completion. No Human Attention disposition authority."""
+        """Request existing Engine research only when authorized. Reuse the exact command ID/payload for uncertain retries; conflict requires reading current truth. Acceptance is not completion. Management dispositions use their separate governed tool."""
         return await portal_request("POST", "/commands/request-account-research", body={
             "schemaVersion": "1", "commandId": command_id, "cycleId": cycle_id, "accountId": account_id,
             "expectedLifecycleVersion": expected_lifecycle_version, "reason": reason,

@@ -366,6 +366,11 @@ class BrunovaMCPServer(MCPServer):
                     buyer_fields = {
                         "acquisition_get_buyer_dry_run": {"cycle_id", "account_id"},
                         "acquisition_request_buyer_dry_run": {"command_id", "cycle_id", "account_id", "expected_attention_version", "source_key"},
+                        "acquisition_record_attention_disposition": {"command_id","objective_reference","attention_id","expected_version","disposition","reason","notes"},
+                        "acquisition_authorize_controlled_effect": {"command_id","objective_reference","message_id","target_id","sender_id","expected_binding_hash","expires_at"},
+                        "acquisition_request_effect_reconciliation": {"command_id","objective_reference","intent_id"},
+                        "acquisition_acknowledge_effect_attention": {"command_id","objective_reference","attention_id","expected_version","reason"},
+                        "acquisition_edit_message_draft": {"command_id","objective_reference","cycle_id","account_id","expected_attention_version","source_key","edit_text"},
                     }
                     if name in buyer_fields and set(arguments or {}) - buyer_fields[name]:
                         raise ToolError("unexpected_buyer_argument")

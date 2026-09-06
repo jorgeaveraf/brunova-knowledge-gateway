@@ -2,6 +2,32 @@
 
 Gateway seguro para agentes de Brunova.
 
+## Acquisition Management authority reconciliation (2026-09-06)
+
+Pancracio's Management identity is trusted, not inherently read/request-only.
+Identity, capability and applicable objective/autonomy are separate. Its existing
+Management token still reaches only Gateway → Portal service auth → Engine contract.
+New bounded tools: `acquisition_record_attention_disposition`,
+`acquisition_authorize_controlled_effect`, `acquisition_request_effect_reconciliation`,
+`acquisition_acknowledge_effect_attention`, `acquisition_edit_message_draft`, plus
+effect/detail/binding/Attention reads. Mutations require `objective_reference`,
+`command_id` and exact task inputs. Engine validates admitted approval scope,
+request hash, expiry/revocation, policy, bindings and versions. Token possession or
+an invented approval string cannot substitute for an admitted objective.
+
+Provenance remains PANCRACIO_GATEWAY / pancracio:gateway, never HUMAN_PORTAL.
+The acquisition Signal worker/developer principals see and invoke none of these
+tools. No self-grant, SQL, direct n8n transport, send or commercial activation tool
+is added. Retry the same command/request; refresh on conflict. Reconciliation is
+lookup-only and cannot reset total attempts or resend an unknown outcome. Draft
+edits create revalidated immutable versions, not message approval.
+
+The Engine's `docs/management-authority.md` owns the authority contract and trusted
+operator admission procedure. Gateway persists no Acquisition business truth.
+Increment 5 remains COMPLETE; commercial transport NOT APPROVED. No live sends or
+Increment 5 recalibration are part of this correction. Historical 3H evidence below
+retains its original scope; its Human-only capability statement is superseded.
+
 ## Acquisition 3H — COMPLETE (2026-09-05)
 
 Pancracio management tools `acquisition_*` call Portal Backend's existing bounded

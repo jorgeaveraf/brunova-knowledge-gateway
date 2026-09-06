@@ -36,7 +36,7 @@ def test_bounds_prohibited_tools_and_scoped_principals(monkeypatch):
     def unexpected(request):
         raise AssertionError("must not call Portal")
     configure(monkeypatch, unexpected)
-    for name in ["acquisition_sql", "acquisition_patch", "acquisition_set_priority", "acquisition_send", "acquisition_record_attention_disposition"]:
+    for name in ["acquisition_sql", "acquisition_patch", "acquisition_set_priority", "acquisition_send"]:
         assert _tool_authorization_error(Principal.management(), name) == "tool_denied"
         assert asyncio.run(mcp_server.call_tool(name, {})).is_error
     assert asyncio.run(mcp_server.call_tool("acquisition_list_cycles", {"limit": 101})).is_error
@@ -117,3 +117,54 @@ def test_buyer_dry_run_is_bounded_indirect_and_never_human_edit_or_send(monkeypa
     assert len(calls) == before
     result = unpack(asyncio.run(mcp_server.call_tool("acquisition_get_buyer_dry_run", {"cycle_id": "c", "account_id": "a"})))
     assert result["data"]["package"]["preview"]["executable"] is False
+
+
+def test_management_capability_objective_provenance_and_worker_boundary(monkeypatch):
+    from dataclasses import replace
+    calls = []
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        assert request.url.path.endswith('/management-actions/RECORD_ATTENTION_DISPOSITION')
+        assert set(body) == {'commandId', 'objectiveReference', 'request'}
+        assert body['objectiveReference'] == 'approved-objective'
+        assert body['request']['disposition'] == 'CONTINUE'
+        return httpx.Response(403, json={'code': 'APPLICABLE_MANAGEMENT_AUTHORIZATION_REQUIRED'})
+    configure(monkeypatch, handler)
+    name = 'acquisition_record_attention_disposition'
+    args = dict(command_id='management-command', objective_reference='approved-objective', attention_id='item', expected_version=1, disposition='CONTINUE', reason='Approved scope')
+    assert _tool_authorization_error(Principal.management(), name) is None
+    assert unpack(asyncio.run(mcp_server.call_tool(name, args)))['httpStatus'] == 403
+    assert unpack(asyncio.run(mcp_server.call_tool(name, args)))['httpStatus'] == 403
+    assert calls[0] == calls[1]
+    assert asyncio.run(mcp_server.call_tool(name, args | {'caller_type': 'HUMAN_PORTAL'})).is_error
+    worker = replace(Principal.management(), type='signal_worker')
+    for tool in acquisition.TOOLS:
+        assert _tool_authorization_error(worker, tool) is not None
+    token = bind_principal(worker)
+    try:
+        assert asyncio.run(mcp_server.call_tool(name, args)).is_error
+    finally:
+        reset_principal(token)
+    assert len(calls) == 2
+
+
+def test_all_management_tools_forward_only_narrow_contract(monkeypatch):
+    cases = [
+        ('acquisition_authorize_controlled_effect', 'AUTHORIZE_EFFECT', dict(message_id='m',target_id='t',sender_id='s',expected_binding_hash='a'*64,expires_at='2026-09-06T18:00:00.000Z')),
+        ('acquisition_request_effect_reconciliation', 'REQUEST_EFFECT_RECONCILIATION', dict(intent_id='i')),
+        ('acquisition_acknowledge_effect_attention', 'ACKNOWLEDGE_EFFECT_ATTENTION', dict(attention_id='a',expected_version=2,reason='Reviewed')),
+        ('acquisition_edit_message_draft', 'EDIT_MESSAGE_DRAFT', dict(cycle_id='c',account_id='a',expected_attention_version=2,source_key='clean',edit_text='Synthetic draft')),
+    ]
+    for name, operation, args in cases:
+        def handler(request):
+            assert request.url.path.endswith('/management-actions/' + operation)
+            body = json.loads(request.content)
+            assert body['objectiveReference'] == 'admitted'
+            assert 'actorType' not in body and 'callerId' not in body
+            return httpx.Response(409, json={'code': 'STALE_ATTENTION_VERSION', 'detail': 'private'})
+        configure(monkeypatch, handler)
+        result = unpack(asyncio.run(mcp_server.call_tool(name, args | dict(command_id='cmd',objective_reference='admitted'))))
+        assert result['httpStatus'] == 409 and result['data']['code'] == 'STALE_ATTENTION_VERSION'
+        assert 'private' not in str(result)
+        monkeypatch.undo()
