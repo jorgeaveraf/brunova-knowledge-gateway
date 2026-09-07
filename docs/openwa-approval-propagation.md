@@ -69,3 +69,17 @@ These tests do not claim automated natural-language consent extraction or real
 WhatsApp delivery. Production deployment, refreshing the host catalog, and an
 explicitly authorized test-chat write/readback remain necessary before claiming
 end-to-end live success. The main working tree's pre-existing changes are untouched.
+
+## Production release — 2026-09-07
+
+Jorge explicitly authorized application and deployment, reserving the real message
+trial for himself. Code commit `1100971` is published on `origin/main`. The prior
+production build source was compared with Git: it already contained `75c65d6`, so
+that base was retained. All 54 targeted tests passed again on the final base.
+Cloud Run revision `brunova-knowledge-gateway-owa-approval-20260907` was deployed
+without traffic, then promoted to 100% after readiness. Subsequent native MCP
+`openwa_status` succeeded without approval: connected and initialized, 51 tools
+(25 read, 26 write). No WhatsApp message was sent during rollout. The deployment
+requirement above is complete; real delivery verification remains the human's
+trial. Existing host sessions may need to reload the catalog to discover the
+new argument. Existing local Acquisition edits were preserved and not deployed.
