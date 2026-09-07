@@ -4,6 +4,7 @@ from mcp import Client
 
 import app.mcp_server as mcp_module
 from app.adapters.openwa.models import OpenWAToolDescriptor
+from app.openwa_approval import reference_for_confirmed_operation
 
 
 class FakeOpenWAClient:
@@ -46,6 +47,11 @@ def test_management_projects_catalog_and_governs_write_without_auditing_body(mon
     monkeypatch.setattr(mcp_module, "get_openwa_client", lambda: fake)
     monkeypatch.setattr(mcp_module, "emit_audit_record", lambda **kwargs: audits.append(kwargs))
 
+    reference = reference_for_confirmed_operation(
+        "test-thread", "confirmed-turn", "MessageSendText",
+        {"sessionId": "safe-session", "text": "private-message-body"},
+    )
+
     async def scenario():
         async with Client(mcp_module.mcp_server) as client:
             catalog = await client.list_tools()
@@ -59,7 +65,7 @@ def test_management_projects_catalog_and_governs_write_without_auditing_body(mon
             written = await client.call_tool(
                 "openwa_MessageSendText",
                 {"sessionId": "safe-session", "text": "private-message-body"},
-                meta={"approval_reference": "approved-test-001"},
+                meta={"approval_reference": reference},
             )
             return catalog, read, denied, written
 
@@ -75,7 +81,7 @@ def test_management_projects_catalog_and_governs_write_without_auditing_body(mon
     assert [call[0] for call in fake.calls] == ["MessageHistory", "MessageSendText"]
     assert all("private-message-body" not in repr(event) for event in audits)
     assert audits[-1]["provider"] == "openwa"
-    assert audits[-1]["approval_reference"] == "approved-test-001"
+    assert audits[-1]["approval_reference"] == reference
 
 
 def test_provider_discovery_failures_are_isolated(monkeypatch):
@@ -100,3 +106,83 @@ def test_provider_discovery_failures_are_isolated(monkeypatch):
     with_n8n = asyncio.run(names())
     assert "n8n_healthy" in with_n8n
     assert "list_sources" in with_n8n
+
+
+def test_confirmed_send_is_bounded_across_both_metadata_channels(monkeypatch):
+    fake = FakeOpenWAClient()
+    audits = []
+    monkeypatch.setattr(mcp_module, "get_openwa_client", lambda: fake)
+    monkeypatch.setattr(mcp_module, "emit_audit_record", lambda **kw: audits.append(kw))
+    payload = {"sessionId": "safe-session", "chatId": "safe-chat", "text": "private-body"}
+    reference = reference_for_confirmed_operation("thread", "human-turn", "MessageSendText", payload)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            # An explicit conversational yes does not magically populate MCP metadata.
+            missing = await client.call_tool("openwa_MessageSendText", payload)
+            assert missing.is_error and "openwa_approval_required" in missing.content[0].text
+            for changed in ({**payload, "chatId": "different-chat"},
+                            {**payload, "text": "different-content"},
+                            {**payload, "sessionId": "different-session"},
+                            {**payload, "quotedMessageId": "different-message"}):
+                denied = await client.call_tool("openwa_MessageSendText", changed,
+                                               meta={"approval_reference": reference})
+                assert denied.is_error and "openwa_approval_scope_mismatch" in denied.content[0].text
+            # Argument-only hosts and metadata-capable clients share the same gate.
+            for metadata in (True, False):
+                args = payload if metadata else {**payload, "approval_reference": reference}
+                written = await client.call_tool("openwa_MessageSendText", args,
+                    meta={"approval_reference": reference} if metadata else None)
+                assert not written.is_error
+            conflict = await client.call_tool("openwa_MessageSendText",
+                {**payload, "approval_reference": "different"}, meta={"approval_reference": reference})
+            assert conflict.is_error and "openwa_approval_conflict" in conflict.content[0].text
+            legacy = await client.call_tool("openwa_MessageSendText", payload,
+                                           meta={"approval_reference": "unbounded-legacy-ref"})
+            assert legacy.is_error
+    asyncio.run(scenario())
+    assert fake.calls == [("MessageSendText", payload), ("MessageSendText", payload)]
+    assert all("private-body" not in repr(event) and "safe-chat" not in repr(event) for event in audits)
+
+
+def test_reference_binds_tool_and_provenance_and_is_order_independent():
+    from app.openwa_approval import validate_reference
+    from app.adapters.google_workspace.errors import WorkspaceAdapterError
+    import pytest
+    payload = {"text": "private", "chatId": "test"}
+    ref = reference_for_confirmed_operation("thread", "turn", "MessageReply", payload)
+    assert validate_reference(ref, "MessageReply", dict(reversed(list(payload.items())))) == ref
+    with pytest.raises(WorkspaceAdapterError):
+        validate_reference(ref, "MessageSendText", payload)
+    assert ref != reference_for_confirmed_operation("other-thread", "turn", "MessageReply", payload)
+    assert ref != reference_for_confirmed_operation("thread", "other-turn", "MessageReply", payload)
+    with pytest.raises(ValueError):
+        reference_for_confirmed_operation("", "turn", "MessageReply", payload)
+
+
+def test_native_mcp_metadata_send_and_reply_after_confirmed_proposal(monkeypatch):
+    from app.openwa_approval import call_confirmed_operation
+
+    class ReplyClient(FakeOpenWAClient):
+        async def list_tools(self, **kwargs):
+            return [*await super().list_tools(**kwargs), OpenWAToolDescriptor(
+                name="MessageReply", input_schema={"type": "object"}, tier="write")]
+
+    fake = ReplyClient()
+    monkeypatch.setattr(mcp_module, "get_openwa_client", lambda: fake)
+    monkeypatch.setattr(mcp_module, "emit_audit_record", lambda **kw: None)
+
+    async def scenario():
+        async with Client(mcp_module.mcp_server) as client:
+            for tool in ("MessageSendText", "MessageReply"):
+                payload = {"sessionId": "test-session", "chatId": "test-chat", "text": "test"}
+                if tool == "MessageReply":
+                    payload["messageId"] = "test-message"
+                # Fixture: agent proposes this exact operation, human confirms it.
+                # Consent interpretation belongs to the agent, not this deterministic helper.
+                result = await call_confirmed_operation(client, "fixture-thread", "confirmed-turn",
+                                                       tool, payload)
+                assert not result.is_error
+    asyncio.run(scenario())
+    assert [tool for tool, args in fake.calls] == ["MessageSendText", "MessageReply"]
+    assert all("approval_reference" not in args for tool, args in fake.calls)

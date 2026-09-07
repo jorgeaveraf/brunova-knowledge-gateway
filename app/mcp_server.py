@@ -44,6 +44,7 @@ from app.agent_signals import (
     SignalStatus,
 )
 from app.artifact_refs import ArtifactReferenceCodec
+from app.openwa_approval import validate_reference
 from app.audit import correlation_id, emit_audit_record
 from app.auth.principals import (
     CapabilityScope,
@@ -330,8 +331,22 @@ class BrunovaMCPServer(MCPServer):
                 occupied.add(exposed_name)
                 tools.append(MCPTool(
                     name=exposed_name,
-                    description=descriptor.description,
-                    input_schema=descriptor.input_schema,
+                    description=(
+                        (descriptor.description or "")
+                        + (" For writes, verify explicit human confirmation for this exact operation; "
+                           "generate a bounded owa1 approval_reference linked to the current thread and "
+                           "confirming request. Send it in MCP params._meta.approval_reference, or use "
+                           "the approval_reference argument if the client cannot set call metadata. "
+                           "Never ask the human to supply the identifier or infer consent from a draft."
+                           if descriptor.tier == "write" else "")
+                    ),
+                    input_schema=(
+                        {**descriptor.input_schema,
+                         "properties": {**descriptor.input_schema.get("properties", {}),
+                                        "approval_reference": {"type": "string",
+                                            "description": "Agent-generated bounded reference to explicit human confirmation; gateway metadata only, never sent to OpenWA."}}}
+                        if descriptor.tier == "write" else descriptor.input_schema
+                    ),
                     annotations=descriptor.annotations or None,
                     _meta={
                         **descriptor.metadata,
@@ -445,7 +460,8 @@ class BrunovaMCPServer(MCPServer):
         context: Context | None,
     ) -> CallToolResult:
         request_id = correlation_id(str(context.request_id) if context else None)
-        approval_reference = _approval_reference(context)
+        metadata_reference = _approval_reference(context)
+        approval_reference = None
         started = time.monotonic()
         try:
             client = get_openwa_client()
@@ -464,15 +480,19 @@ class BrunovaMCPServer(MCPServer):
                     404,
                 )
             if descriptor.tier == "write":
-                approval_reference = ContentMutationPolicy.normalized_approval_reference(
-                    approval_reference or ""
-                )
-                if approval_reference is None:
+                # Compatibility for argument-only MCP hosts. Both channels enter the
+                # same approval gate; governance metadata never reaches downstream.
+                arguments = dict(arguments)
+                argument_reference = arguments.pop("approval_reference", None)
+                if (metadata_reference is not None and argument_reference is not None
+                        and metadata_reference != argument_reference):
                     raise WorkspaceAdapterError(
-                        "openwa_approval_required",
-                        "A valid external approval reference is required for OpenWA writes.",
-                        403,
+                        "openwa_approval_conflict", "Conflicting approval metadata.", 403
                     )
+                approval_reference = validate_reference(
+                    metadata_reference if metadata_reference is not None else argument_reference,
+                    descriptor.name, arguments,
+                )
             result = await client.call_tool(descriptor.name, arguments)
             downstream_failed = bool(result.get("isError", False)) if isinstance(result, dict) else False
             emit_audit_record(
