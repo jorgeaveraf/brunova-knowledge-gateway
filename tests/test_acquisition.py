@@ -50,6 +50,24 @@ def test_business_lookup_preserves_ambiguity_without_mutation(monkeypatch):
     assert len(calls) == 1
 
 
+def test_effect_wave_binding_survives_outer_allowlist_without_actor_spoof(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        assert request.url.path.endswith('/management-waves/wave-exact/actions/AUTHORIZE_EFFECT')
+        assert json.loads(request.content)['objectiveReference'] == 'exact-wave-objective'
+        return httpx.Response(403, json={'code': 'CONTROLLED_TEST_POLICY_REQUIRED'})
+    configure(monkeypatch, handler)
+    args = dict(command_id='synthetic', objective_reference='exact-wave-objective', wave_id='wave-exact',
+                message_id='message-exact', target_id='target-exact', sender_id='sender-exact',
+                expected_binding_hash='a'*64, expires_at='2026-09-08T00:00:00Z')
+    result = asyncio.run(mcp_server.call_tool('acquisition_authorize_controlled_effect', args))
+    assert unpack(result)['httpStatus'] == 403
+    assert len(calls) == 1
+    assert asyncio.run(mcp_server.call_tool('acquisition_authorize_controlled_effect', args | {'caller_type':'HUMAN_PORTAL'})).is_error
+    assert len(calls) == 1
+
+
 def test_cycle_pool_policy_review_and_wave_scope_are_portal_contracts(monkeypatch):
     calls = []
     truth = {"schemaVersion": "1", "review": {"pool": {"RETAINED": 71, "READY_NOW": 4},

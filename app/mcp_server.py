@@ -400,6 +400,12 @@ class BrunovaMCPServer(MCPServer):
                         "acquisition_acknowledge_effect_attention": {"command_id","objective_reference","attention_id","expected_version","reason"},
                         "acquisition_edit_message_draft": {"command_id","objective_reference","cycle_id","account_id","expected_attention_version","source_key","edit_text"},
                     }
+                    # These existing commands support the exact approved-wave
+                    # path; the strict outer allowlist must preserve that binding.
+                    for wave_tool in ("acquisition_record_attention_disposition", "acquisition_authorize_controlled_effect",
+                                      "acquisition_request_effect_reconciliation", "acquisition_acknowledge_effect_attention",
+                                      "acquisition_edit_message_draft"):
+                        buyer_fields[wave_tool].add("wave_id")
                     if name in buyer_fields and set(arguments or {}) - buyer_fields[name]:
                         raise ToolError("unexpected_buyer_argument")
                     return await super().call_tool(name, arguments, context)
