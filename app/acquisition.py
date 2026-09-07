@@ -30,7 +30,7 @@ TOOLS = frozenset({
     "acquisition_review_commercial_handoff", "acquisition_accept_commercial_handoff",
     "acquisition_list_opportunity_pool", "acquisition_get_cycle_review", "acquisition_compose_wave",
     "acquisition_review_wave", "acquisition_request_reconsideration", "acquisition_stop_discovery",
-    "acquisition_get_cycle_policy",
+    "acquisition_get_cycle_policy", "acquisition_resolve_accounts", "acquisition_retain_opportunity", "acquisition_pause_cycle",
 })
 
 
@@ -92,6 +92,30 @@ def register_acquisition_tools(server: Any) -> None:
         path = f"/management-waves/{wave_id}/actions/{operation}" if wave_id else "/management-actions/" + operation
         return await portal_request("POST", path, body={
             "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_resolve_accounts(cycle_id: Identifier,
+            name: Annotated[str, Field(min_length=2, max_length=120)]) -> CallToolResult:
+        """Resolve a business name/domain using a bounded authoritative lookup (maximum 20 candidates). If CLARIFICATION_REQUIRED or truncated, ask which company using domain/country, NEVER choose the first match or ask the Human for an internal ID. Read the chosen Account and current version before any separately authorized command. This lookup never mutates."""
+        return await portal_request("GET", f"/cycles/{cycle_id}/resolve-accounts", params={"name": name})
+
+    @server.tool()
+    async def acquisition_retain_opportunity(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, account_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
+            reason: Annotated[str, Field(min_length=1, max_length=1000)],
+            remove_from_wave: bool = False) -> CallToolResult:
+        """Retain an exact resolved Account for later without changing its qualification/evidence. Requires an admitted exact CYCLE_CONTROL objective. Removal cancels the ENTIRE unexecuted wave and its authority (no silent replacement); its logical wave number/history remains consumed. Explain that consequence before requesting removal. Executed waves require Management review instead."""
+        return await management("CYCLE_CONTROL", command_id, objective_reference, {
+            "cycleId": cycle_id, "accountId": account_id, "expectedVersion": expected_version,
+            "operation": "REMOVE_FROM_WAVE" if remove_from_wave else "RETAIN_ACCOUNT", "reason": reason})
+
+    @server.tool()
+    async def acquisition_pause_cycle(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
+            reason: Annotated[str, Field(min_length=1, max_length=1000)]) -> CallToolResult:
+        """Apply an exact admitted technical halt to prevent progression; preserve opportunities/evidence. Explain this is a safety/operational pause, not a claim of business non-fit. No automatic resume or activation."""
+        return await management("CYCLE_CONTROL", command_id, objective_reference, {
+            "cycleId": cycle_id, "expectedVersion": expected_version, "operation": "TECHNICAL_HALT", "reason": reason})
 
     @server.tool()
     async def acquisition_get_cycle_policy() -> CallToolResult:

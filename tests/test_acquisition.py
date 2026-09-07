@@ -32,6 +32,24 @@ def test_exact_truth_auth_and_no_interpretation(monkeypatch):
     assert unpack(result)["data"] == truth
 
 
+def test_business_lookup_preserves_ambiguity_without_mutation(monkeypatch):
+    calls = []
+    truth = {"resolution": "CLARIFICATION_REQUIRED", "truncated": False, "candidates": [
+        {"display_name": "Acme Logistics", "canonical_domain": "mx.synthetic.local", "country": "MX"},
+        {"display_name": "Acme Logistics", "canonical_domain": "us.synthetic.local", "country": "US"}]}
+    def handler(request):
+        calls.append(request)
+        assert request.method == "GET"
+        assert request.url.params["name"] == "Acme"
+        return httpx.Response(200, json=truth)
+    configure(monkeypatch, handler)
+    result = asyncio.run(mcp_server.call_tool("acquisition_resolve_accounts", {"cycle_id": "synthetic-7c", "name": "Acme"}))
+    assert unpack(result)["data"] == truth
+    assert len(calls) == 1
+    assert asyncio.run(mcp_server.call_tool("acquisition_resolve_accounts", {"cycle_id": "synthetic-7c", "name": "x"})).is_error
+    assert len(calls) == 1
+
+
 def test_cycle_pool_policy_review_and_wave_scope_are_portal_contracts(monkeypatch):
     calls = []
     truth = {"schemaVersion": "1", "review": {"pool": {"RETAINED": 71, "READY_NOW": 4},
