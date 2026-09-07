@@ -1,5 +1,17 @@
 # Brunova Knowledge Gateway
 
+## Acquisition Cycle control — 7C
+
+Management tools `acquisition_get_cycle_policy`, `acquisition_list_opportunity_pool`
+(maximum 50, stable cursor), `acquisition_get_cycle_review`,
+`acquisition_compose_wave`, `acquisition_review_wave`,
+`acquisition_request_reconsideration` and `acquisition_stop_discovery` consume
+Portal Backend's Engine contract. Existing bounded Management operations accept
+an optional exact `wave_id` and admitted parent objective; authority remains
+`PANCRACIO_GATEWAY`, never a Human credential. Composition does not approve a
+wave; CONTINUE/ADJUST does not authorize the next wave. No activation, policy
+patch, DB connection or direct Acquisition transport/CRM path is added.
+
 Gateway seguro para agentes de Brunova.
 
 ## Acquisition CRM boundary (Increment 6)

@@ -32,6 +32,36 @@ def test_exact_truth_auth_and_no_interpretation(monkeypatch):
     assert unpack(result)["data"] == truth
 
 
+def test_cycle_pool_policy_review_and_wave_scope_are_portal_contracts(monkeypatch):
+    calls = []
+    truth = {"schemaVersion": "1", "review": {"pool": {"RETAINED": 71, "READY_NOW": 4},
+             "zeroResponseMeansFailure": False, "productionExecution": "DISABLED"}}
+    def handler(request):
+        calls.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json=truth)
+        return httpx.Response(403, json={"code": "ACCOUNT_OUTSIDE_APPROVED_WAVE", "unsafe": "never expose upstream text"})
+    configure(monkeypatch, handler)
+    for name, args, path in [
+        ("acquisition_get_cycle_policy", {}, "/cycle-policy"),
+        ("acquisition_get_cycle_review", {"cycle_id": "synthetic-7c"}, "/cycles/synthetic-7c/review"),
+        ("acquisition_list_opportunity_pool", {"cycle_id": "synthetic-7c", "limit": 50}, "/cycles/synthetic-7c/pool"),
+    ]:
+        assert unpack(asyncio.run(mcp_server.call_tool(name, args)))["data"] == truth
+        assert calls[-1].url.path.endswith(path)
+    count = len(calls)
+    assert asyncio.run(mcp_server.call_tool("acquisition_list_opportunity_pool", {"cycle_id": "c", "limit": 51})).is_error
+    assert len(calls) == count
+    denied = unpack(asyncio.run(mcp_server.call_tool("acquisition_request_pre_outbound_sync", {
+        "command_id": "synthetic-command", "objective_reference": "exact-wave-objective", "wave_id": "wave-1",
+        "cycle_id": "c", "account_id": "outside"})))
+    assert calls[-1].url.path.endswith("/management-waves/wave-1/actions/REQUEST_PRE_OUTBOUND_SYNC")
+    assert json.loads(calls[-1].content) == {"commandId": "synthetic-command", "objectiveReference": "exact-wave-objective", "request": {"cycleId": "c", "accountId": "outside"}}
+    assert denied["httpStatus"] == 403
+    assert denied["data"]["code"] == "ACCOUNT_OUTSIDE_APPROVED_WAVE"
+    assert "unsafe" not in denied["data"]
+
+
 def test_bounds_prohibited_tools_and_scoped_principals(monkeypatch):
     def unexpected(request):
         raise AssertionError("must not call Portal")

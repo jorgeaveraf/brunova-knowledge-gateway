@@ -28,6 +28,9 @@ TOOLS = frozenset({
     "acquisition_get_effect", "acquisition_get_effect_bindings", "acquisition_list_effect_attention",
     "acquisition_list_crm", "acquisition_request_pre_outbound_sync", "acquisition_request_crm_reconciliation",
     "acquisition_review_commercial_handoff", "acquisition_accept_commercial_handoff",
+    "acquisition_list_opportunity_pool", "acquisition_get_cycle_review", "acquisition_compose_wave",
+    "acquisition_review_wave", "acquisition_request_reconsideration", "acquisition_stop_discovery",
+    "acquisition_get_cycle_policy",
 })
 
 
@@ -85,9 +88,61 @@ async def portal_request(method: str, path: str, *, params: dict | None = None,
 
 
 def register_acquisition_tools(server: Any) -> None:
-    async def management(operation, command_id, objective_reference, request):
-        return await portal_request("POST", "/management-actions/" + operation, body={
+    async def management(operation, command_id, objective_reference, request, wave_id=None):
+        path = f"/management-waves/{wave_id}/actions/{operation}" if wave_id else "/management-actions/" + operation
+        return await portal_request("POST", path, body={
             "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_get_cycle_policy() -> CallToolResult:
+        """Inspect the versioned Cycle 1 policy definition and implementation readiness. Not a live Cycle, objective or activation permission. Real data and production effects remain disabled."""
+        return await portal_request("GET", "/cycle-policy")
+
+    @server.tool()
+    async def acquisition_list_opportunity_pool(cycle_id: Identifier,
+            state: Literal["READY_NOW", "RETAINED", "HOLD", "REJECTED"] | None = None,
+            limit: Annotated[int, Field(ge=1, le=50)] = 25, after: Identifier | None = None) -> CallToolResult:
+        """Read the durable opportunity pool, bounded by stable Account ID pagination. Not selected is not rejected. Readiness reasons and evidence meaning come unchanged from Engine; no local scoring."""
+        return await portal_request("GET", f"/cycles/{cycle_id}/pool", params={"state": state, "limit": limit, "after": after})
+
+    @server.tool()
+    async def acquisition_get_cycle_review(cycle_id: Identifier) -> CallToolResult:
+        """Read Cycle discovery by market, pool, exact waves, attempt budgets, responses and review evidence. Missing market evidence is a discovery limitation, not a country-quality verdict. No automatic ICP changes."""
+        return await portal_request("GET", f"/cycles/{cycle_id}/review")
+
+    @server.tool()
+    async def acquisition_compose_wave(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, expected_version: Annotated[int, Field(ge=1)]) -> CallToolResult:
+        """Compose at most four currently executable candidates under an exact admitted Management objective. Composition does not approve or activate execution. A next wave requires prior Management review and its own exact approval."""
+        return await management("CYCLE_CONTROL", command_id, objective_reference,
+                                {"cycleId": cycle_id, "operation": "COMPOSE_WAVE", "expectedVersion": expected_version})
+
+    @server.tool()
+    async def acquisition_review_wave(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, wave_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
+            decision: Literal["CONTINUE", "ADJUST", "STOP"], reason: Annotated[str, Field(min_length=1, max_length=1000)]) -> CallToolResult:
+        """Record an exact admitted Management review. CONTINUE/ADJUST never approves the next composition. STOP preserves opportunities and blocks progression. Cannot change policy, limits or channels."""
+        return await management("CYCLE_CONTROL", command_id, objective_reference,
+                                {"cycleId": cycle_id, "operation": "REVIEW_WAVE", "waveId": wave_id,
+                                 "expectedVersion": expected_version, "decision": decision, "reason": reason})
+
+    @server.tool()
+    async def acquisition_request_reconsideration(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, account_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
+            operation: Literal["DEEPER_RESEARCH", "RESEARCH_AGAIN", "RECONSIDER_HYPOTHESIS", "RECONSIDER_BUYER"],
+            reason: Annotated[str, Field(min_length=1, max_length=1000)], wave_id: Identifier | None = None) -> CallToolResult:
+        """Request new bounded research under an exact Management objective, preserving prior decisions/evidence. Does not override qualification or declare a buyer. Existing WorkItem/Signal path only."""
+        return await management("REQUEST_RECONSIDERATION", command_id, objective_reference,
+                                {"cycleId": cycle_id, "accountId": account_id, "expectedVersion": expected_version,
+                                 "operation": operation, "reason": reason}, wave_id)
+
+    @server.tool()
+    async def acquisition_stop_discovery(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
+            reason: Annotated[str, Field(min_length=1, max_length=1000)]) -> CallToolResult:
+        """Stop further admissions with a durable reason under an exact admitted objective. 75 is a maximum, never a quota. Existing Accounts and research remain intact."""
+        return await management("CYCLE_CONTROL", command_id, objective_reference,
+                                {"cycleId": cycle_id, "operation": "STOP_DISCOVERY", "expectedVersion": expected_version, "reason": reason})
 
     @server.tool()
     async def acquisition_list_crm(cycle_id: Identifier, account_id: Identifier | None = None,
@@ -98,15 +153,15 @@ def register_acquisition_tools(server: Any) -> None:
 
     @server.tool()
     async def acquisition_request_pre_outbound_sync(command_id: Identifier, objective_reference: Identifier,
-            cycle_id: Identifier, account_id: Identifier) -> CallToolResult:
+            cycle_id: Identifier, account_id: Identifier, wave_id: Identifier | None = None) -> CallToolResult:
         """Request exact CRM boundary admission under an admitted Management objective. Engine derives all readiness from PostgreSQL. May enqueue controlled synthetic Company/Contact work; no Deal, outreach or commercial activation. No caller-supplied eligibility or provider IDs."""
-        return await management("REQUEST_PRE_OUTBOUND_SYNC", command_id, objective_reference, {"cycleId": cycle_id, "accountId": account_id})
+        return await management("REQUEST_PRE_OUTBOUND_SYNC", command_id, objective_reference, {"cycleId": cycle_id, "accountId": account_id}, wave_id)
 
     @server.tool()
     async def acquisition_request_crm_reconciliation(command_id: Identifier, objective_reference: Identifier,
-            intent_id: Identifier, expected_version: Annotated[int, Field(ge=1)]) -> CallToolResult:
+            intent_id: Identifier, expected_version: Annotated[int, Field(ge=1)], wave_id: Identifier | None = None) -> CallToolResult:
         """Request CRM reconciliation under exact admitted objective/version. Lookup first; uncertain creates cannot be blindly repeated. No mapping reassignment or generic property patch."""
-        return await management("REQUEST_CRM_RECONCILIATION", command_id, objective_reference, {"intentId": intent_id, "expectedVersion": expected_version})
+        return await management("REQUEST_CRM_RECONCILIATION", command_id, objective_reference, {"intentId": intent_id, "expectedVersion": expected_version}, wave_id)
 
     @server.tool()
     async def acquisition_review_commercial_handoff(command_id: Identifier, objective_reference: Identifier,
@@ -125,43 +180,43 @@ def register_acquisition_tools(server: Any) -> None:
     async def acquisition_record_attention_disposition(command_id: Identifier, objective_reference: Identifier,
             attention_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
             disposition: Literal["CONTINUE", "HOLD", "REJECT"], reason: Annotated[str, Field(min_length=1,max_length=1000)],
-            notes: Annotated[str, Field(max_length=2000)] = "") -> CallToolResult:
+            notes: Annotated[str, Field(max_length=2000)] = "", wave_id: Identifier | None = None) -> CallToolResult:
         """Management decision under an admitted Human objective, not token-only autonomy. Preserve PANCRACIO_GATEWAY provenance, exact version and retry identity. No gate activation."""
         return await management("RECORD_ATTENTION_DISPOSITION", command_id, objective_reference, {
-            "attentionId": attention_id, "expectedVersion": expected_version, "disposition": disposition, "reason": reason, "notes": notes})
+            "attentionId": attention_id, "expectedVersion": expected_version, "disposition": disposition, "reason": reason, "notes": notes}, wave_id)
 
     @server.tool()
     async def acquisition_authorize_controlled_effect(command_id: Identifier, objective_reference: Identifier,
             message_id: Identifier, target_id: Identifier, sender_id: Identifier,
             expected_binding_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
-            expires_at: Annotated[str, Field(min_length=20,max_length=40)]) -> CallToolResult:
+            expires_at: Annotated[str, Field(min_length=20,max_length=40)], wave_id: Identifier | None = None) -> CallToolResult:
         """Authorize only an exact controlled effect covered by an admitted objective and current policy. This may enqueue real controlled work; never invoke without applicable Human authority. Commercial transport remains unapproved. Not a send or transport tool."""
         return await management("AUTHORIZE_EFFECT", command_id, objective_reference, {
             "messageId": message_id, "targetId": target_id, "senderId": sender_id,
-            "expectedBindingHash": expected_binding_hash, "expiresAt": expires_at})
+            "expectedBindingHash": expected_binding_hash, "expiresAt": expires_at}, wave_id)
 
     @server.tool()
-    async def acquisition_request_effect_reconciliation(command_id: Identifier, objective_reference: Identifier, intent_id: Identifier) -> CallToolResult:
+    async def acquisition_request_effect_reconciliation(command_id: Identifier, objective_reference: Identifier, intent_id: Identifier, wave_id: Identifier | None = None) -> CallToolResult:
         """Request bounded lookup-only reconciliation under an admitted objective. Never resend UNKNOWN work or reset total attempts."""
-        return await management("REQUEST_EFFECT_RECONCILIATION", command_id, objective_reference, {"intentId": intent_id})
+        return await management("REQUEST_EFFECT_RECONCILIATION", command_id, objective_reference, {"intentId": intent_id}, wave_id)
 
     @server.tool()
     async def acquisition_acknowledge_effect_attention(command_id: Identifier, objective_reference: Identifier,
             attention_id: Identifier, expected_version: Annotated[int, Field(ge=1)],
-            reason: Annotated[str, Field(min_length=1,max_length=1000)]) -> CallToolResult:
+            reason: Annotated[str, Field(min_length=1,max_length=1000)], wave_id: Identifier | None = None) -> CallToolResult:
         """Acknowledge bounded Management Attention under an admitted objective. Does not send, approve commercial outreach or hand off CRM ownership."""
         return await management("ACKNOWLEDGE_EFFECT_ATTENTION", command_id, objective_reference, {
-            "attentionId": attention_id, "expectedVersion": expected_version, "reason": reason})
+            "attentionId": attention_id, "expectedVersion": expected_version, "reason": reason}, wave_id)
 
     @server.tool()
     async def acquisition_edit_message_draft(command_id: Identifier, objective_reference: Identifier,
             cycle_id: Identifier, account_id: Identifier, expected_attention_version: Annotated[int, Field(ge=1)],
             source_key: Literal["clean", "unresolved", "claim-trap", "suppressed", "ambiguous", "stale", "guessed"],
-            edit_text: Annotated[str, Field(min_length=1,max_length=4000)]) -> CallToolResult:
+            edit_text: Annotated[str, Field(min_length=1,max_length=4000)], wave_id: Identifier | None = None) -> CallToolResult:
         """Create a new synthetic draft version under an admitted objective. Claims are revalidated; an edit is never approval or send authority."""
         return await management("EDIT_MESSAGE_DRAFT", command_id, objective_reference, {
             "cycleId": cycle_id, "accountId": account_id, "expectedAttentionVersion": expected_attention_version,
-            "sourceKey": source_key, "editText": edit_text})
+            "sourceKey": source_key, "editText": edit_text}, wave_id)
 
     @server.tool()
     async def acquisition_get_effect(intent_id: Identifier) -> CallToolResult:
