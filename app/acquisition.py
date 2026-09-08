@@ -33,6 +33,7 @@ TOOLS = frozenset({
     "acquisition_get_cycle_policy", "acquisition_resolve_accounts", "acquisition_retain_opportunity", "acquisition_pause_cycle",
     "acquisition_get_policy_settings", "acquisition_propose_discovery_limit", "acquisition_confirm_policy_proposal",
     "acquisition_get_operating_model",
+    "acquisition_get_activation_preflight",
 })
 
 
@@ -133,6 +134,11 @@ def register_acquisition_tools(server: Any) -> None:
     async def acquisition_get_operating_model() -> CallToolResult:
         """Explain in ordinary user-language how Acquisition operates without an open Portal or chat. Engine/PostgreSQL retain truth; Mac executes admitted bounded work; scheduler recovers, Signals wake immediately; Pancracio interprets and directs through Management authority; Portal supports visual review. Sleeping/offline Mac delays execution, not durability. Report actual observed schedule/activity with freshness; never promise 24/7 execution, invent health or imply current calibration runtime is already a real active Cycle. Waves, policy and activation remain Management boundaries."""
         return await portal_request("GET", "/operating-model")
+
+    @server.tool()
+    async def acquisition_get_activation_preflight() -> CallToolResult:
+        """Read authoritative activation preflight, checks, freshness and reasons. This is observability, never permission or an activation action. Stale/missing probes mean not ready. Explain issues in the user's language; distinguish Email readiness from disabled production execution and future 7E-A research from first-wave approval/outreach."""
+        return await portal_request("GET", "/activation-preflight")
 
     @server.tool()
     async def acquisition_propose_discovery_limit(command_id: Identifier, objective_reference: Identifier,
