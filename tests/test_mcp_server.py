@@ -528,6 +528,8 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
 
     assert {tool.name for tool in result.tools} == {
         "acquisition_get_cycle_policy", "acquisition_list_opportunity_pool", "acquisition_get_cycle_review",
+        "acquisition_get_policy_settings", "acquisition_propose_discovery_limit", "acquisition_confirm_policy_proposal",
+        "acquisition_get_operating_model",
         "acquisition_resolve_accounts", "acquisition_retain_opportunity", "acquisition_pause_cycle",
         "acquisition_compose_wave", "acquisition_review_wave", "acquisition_request_reconsideration", "acquisition_stop_discovery",
         "acquisition_list_crm", "acquisition_request_pre_outbound_sync", "acquisition_request_crm_reconciliation",

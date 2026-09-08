@@ -31,6 +31,8 @@ TOOLS = frozenset({
     "acquisition_list_opportunity_pool", "acquisition_get_cycle_review", "acquisition_compose_wave",
     "acquisition_review_wave", "acquisition_request_reconsideration", "acquisition_stop_discovery",
     "acquisition_get_cycle_policy", "acquisition_resolve_accounts", "acquisition_retain_opportunity", "acquisition_pause_cycle",
+    "acquisition_get_policy_settings", "acquisition_propose_discovery_limit", "acquisition_confirm_policy_proposal",
+    "acquisition_get_operating_model",
 })
 
 
@@ -121,6 +123,32 @@ def register_acquisition_tools(server: Any) -> None:
     async def acquisition_get_cycle_policy() -> CallToolResult:
         """Inspect the versioned Cycle 1 policy definition and implementation readiness. Not a live Cycle, objective or activation permission. Real data and production effects remain disabled."""
         return await portal_request("GET", "/cycle-policy")
+
+    @server.tool()
+    async def acquisition_get_policy_settings() -> CallToolResult:
+        """Read Engine-authoritative candidate settings and mutability. Explain in the user's language: configured is not active; retained opportunities are not rejected; changing an approved limit needs governance. Never infer runtime health from policy readiness."""
+        return await portal_request("GET", "/policy-candidate")
+
+    @server.tool()
+    async def acquisition_get_operating_model() -> CallToolResult:
+        """Explain in ordinary user-language how Acquisition operates without an open Portal or chat. Engine/PostgreSQL retain truth; Mac executes admitted bounded work; scheduler recovers, Signals wake immediately; Pancracio interprets and directs through Management authority; Portal supports visual review. Sleeping/offline Mac delays execution, not durability. Report actual observed schedule/activity with freshness; never promise 24/7 execution, invent health or imply current calibration runtime is already a real active Cycle. Waves, policy and activation remain Management boundaries."""
+        return await portal_request("GET", "/operating-model")
+
+    @server.tool()
+    async def acquisition_propose_discovery_limit(command_id: Identifier, objective_reference: Identifier,
+            expected_version: Annotated[int, Field(ge=3)], discovery_maximum: Annotated[int, Field(ge=1, le=75)],
+            reason: Annotated[str, Field(min_length=1, max_length=1000)]) -> CallToolResult:
+        """Propose a pre-activation candidate change under an admitted exact POLICY_CANDIDATE objective. Explain current/proposed value and impact before confirmation. This bounded editor only reduces/restores within the approved ceiling of 75; increases require material policy revision. Does not change the candidate yet, activate a Cycle or alter snapshots."""
+        return await management("POLICY_CANDIDATE", command_id, objective_reference,
+            {"operation": "PROPOSE", "expectedVersion": expected_version, "discoveryMaximum": discovery_maximum, "reason": reason})
+
+    @server.tool()
+    async def acquisition_confirm_policy_proposal(command_id: Identifier, objective_reference: Identifier,
+            expected_version: Annotated[int, Field(ge=3)], proposal_id: Identifier,
+            proposal_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]) -> CallToolResult:
+        """Confirm the exact previously previewed policy proposal using a separately admitted exact objective. Resolve identifiers from Engine, not from the Human. Creates immutable candidate history with truthful Pancracio provenance; no activation or provider effect. Stale/expired proposals fail closed. Read back settings afterward."""
+        return await management("POLICY_CANDIDATE", command_id, objective_reference,
+            {"operation": "CONFIRM", "expectedVersion": expected_version, "proposalId": proposal_id, "proposalHash": proposal_hash})
 
     @server.tool()
     async def acquisition_list_opportunity_pool(cycle_id: Identifier,
