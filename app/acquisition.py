@@ -137,7 +137,7 @@ def register_acquisition_tools(server: Any) -> None:
 
     @server.tool()
     async def acquisition_get_cycle_policy() -> CallToolResult:
-        """Inspect the versioned Cycle 1 policy definition and implementation readiness. Not a live Cycle, objective or activation permission. Real data and production effects remain disabled."""
+        """Inspect the versioned Cycle 1 policy definition and implementation readiness. This definition is not a live Cycle, objective or activation permission. Read current Cycle/health to determine real-data state; Discovery activation does not authorize production effects."""
         return await portal_request("GET", "/cycle-policy")
 
     @server.tool()
