@@ -34,6 +34,8 @@ TOOLS = frozenset({
     "acquisition_get_policy_settings", "acquisition_propose_discovery_limit", "acquisition_confirm_policy_proposal",
     "acquisition_get_operating_model",
     "acquisition_get_activation_preflight",
+    "acquisition_get_discovery",
+    "acquisition_request_discovery_planning",
 })
 
 
@@ -91,10 +93,23 @@ async def portal_request(method: str, path: str, *, params: dict | None = None,
 
 
 def register_acquisition_tools(server: Any) -> None:
+    @server.tool()
+    async def acquisition_get_discovery() -> CallToolResult:
+        """Inspect authoritative Discovery planning, source health/yield and durable candidates BEFORE Account admission. Explain what was observed, unresolved identity, missing evidence and pending work; identity is not qualification. Counts and bounded displayed samples differ. Source failure/empty results do not prove absence of market opportunity. No company list is needed to begin an authorized active Cycle; no activation or provider action occurs here."""
+        return await portal_request("GET", "/discovery")
+
     async def management(operation, command_id, objective_reference, request, wave_id=None):
         path = f"/management-waves/{wave_id}/actions/{operation}" if wave_id else "/management-actions/" + operation
         return await portal_request("POST", path, body={
             "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_request_discovery_planning(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            direction: Annotated[str, Field(min_length=10, max_length=500)]) -> CallToolResult:
+        """Request bounded Discovery planning/reorientation, not a company list or policy change. Read the exact current policy first; explain direction, then use an admitted DISCOVERY_CONTROL objective binding this request. Requires a separately authorized ACTIVE Cycle with standing Discovery scope. Does not activate it, bypass cadence, resolve identities by fiat, qualify companies, or call sources directly. WAITING means committed direction, not completed search. Existing pending work must finish/reconcile first."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "REQUEST_PLANNING", "cycleId": cycle_id, "policyHash": policy_hash, "direction": direction})
 
     @server.tool()
     async def acquisition_resolve_accounts(cycle_id: Identifier,
