@@ -37,6 +37,7 @@ TOOLS = frozenset({
     "acquisition_get_discovery",
     "acquisition_request_discovery_planning",
     "acquisition_record_discovery_investigation",
+    "acquisition_request_candidate_investigation",
 })
 
 
@@ -103,6 +104,15 @@ def register_acquisition_tools(server: Any) -> None:
         path = f"/management-waves/{wave_id}/actions/{operation}" if wave_id else "/management-actions/" + operation
         return await portal_request("POST", path, body={
             "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_request_candidate_investigation(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, candidate_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            expected_last_seen: str, direction: Annotated[str, Field(min_length=10, max_length=2000)], urls: list[str]) -> CallToolResult:
+        """Request real Engine investigation work for ONE existing candidate while broad Discovery remains paused. Read current candidate first and copy last_seen exactly. Provide independent Management direction and 1–6 public HTTPS evidence routes; URLs are hypotheses, never identity verification. Requires an exact admitted DISCOVERY_CONTROL objective. Engine commits WorkItem, existing Signal/Mac executes bounded reads, evidence/reconciliation/screen history is durable. Does not resume Discovery, add candidates, waive identity or contact prospects. Read back journey after execution."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "REQUEST_CANDIDATE_INVESTIGATION", "cycleId": cycle_id, "candidateId": candidate_id,
+            "policyHash": policy_hash, "expectedLastSeen": expected_last_seen, "direction": direction, "urls": urls})
 
     @server.tool()
     async def acquisition_record_discovery_investigation(command_id: Identifier, objective_reference: Identifier,
