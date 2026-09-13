@@ -36,6 +36,7 @@ TOOLS = frozenset({
     "acquisition_get_activation_preflight",
     "acquisition_get_discovery",
     "acquisition_request_discovery_planning",
+    "acquisition_record_discovery_investigation",
 })
 
 
@@ -102,6 +103,17 @@ def register_acquisition_tools(server: Any) -> None:
         path = f"/management-waves/{wave_id}/actions/{operation}" if wave_id else "/management-actions/" + operation
         return await portal_request("POST", path, body={
             "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_record_discovery_investigation(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, candidate_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            summary: Annotated[str, Field(min_length=10, max_length=4000)], next_action: Annotated[str, Field(min_length=10, max_length=1000)],
+            attempts: list[dict[str, str]], limitations: list[str]) -> CallToolResult:
+        """Record a bounded public-evidence investigation of an existing candidate while Discovery is paused. Requires exact DISCOVERY_CONTROL objective. Preserve actual executor/search/read provenance; never imply Pancracio independently browsed when Codex supplied the investigation. Findings are Management-recorded observations/inferences, NOT verified identity, qualification, admission or permission to resume. Read journeys afterward. No provider or DB bypass."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_INVESTIGATION", "cycleId": cycle_id, "candidateId": candidate_id,
+            "policyHash": policy_hash, "summary": summary, "nextAction": next_action,
+            "attempts": attempts, "limitations": limitations})
 
     @server.tool()
     async def acquisition_request_discovery_planning(command_id: Identifier, objective_reference: Identifier,
