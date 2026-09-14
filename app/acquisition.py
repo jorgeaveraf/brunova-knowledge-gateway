@@ -38,6 +38,7 @@ TOOLS = frozenset({
     "acquisition_request_discovery_planning",
     "acquisition_record_discovery_investigation",
     "acquisition_request_candidate_investigation",
+    "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
 })
 
 
@@ -104,6 +105,26 @@ def register_acquisition_tools(server: Any) -> None:
         path = f"/management-waves/{wave_id}/actions/{operation}" if wave_id else "/management-actions/" + operation
         return await portal_request("POST", path, body={
             "commandId": command_id, "objectiveReference": objective_reference, "request": request})
+
+    @server.tool()
+    async def acquisition_begin_discovery_batch(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, batch_id: Identifier,
+            policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            baseline_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            maximum_new: Annotated[int, Field(ge=1, le=15)], direction: Annotated[str, Field(min_length=10, max_length=500)]) -> CallToolResult:
+        """Begin an explicitly approved review batch in the SAME active, paused Discovery Cycle. Read discovery batchBaselines first, preserve existing candidates, bind exact baseline/policy and maximum 1–15 NEW candidates. Requires an admitted exact DISCOVERY_CONTROL objective. This removes only the Discovery review pause; it cannot activate a Cycle, change safety gates, force Account admission or send anything. Request separately bound planning afterward. At the ceiling/expiry broad work stops for Management review; never self-expand to a third batch."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "BEGIN_REVIEW_BATCH", "cycleId": cycle_id, "batchId": batch_id,
+            "policyHash": policy_hash, "baselineHash": baseline_hash, "maximumNew": maximum_new, "direction": direction})
+
+    @server.tool()
+    async def acquisition_finish_discovery_batch(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, batch_id: Identifier,
+            policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            reason: Annotated[str, Field(min_length=10, max_length=1000)]) -> CallToolResult:
+        """Close the exact Discovery review batch early and pause broad Discovery. Existing observations, candidates and Accounts remain durable. Requires an admitted exact DISCOVERY_CONTROL objective and no in-flight source work. Read back reviewBatches and batchCandidates; explain candidate vs Account, uncertainties and source limitations. No outreach, CRM mutation or next batch permission."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "FINISH_REVIEW_BATCH", "cycleId": cycle_id, "batchId": batch_id, "policyHash": policy_hash, "reason": reason})
 
     @server.tool()
     async def acquisition_request_candidate_investigation(command_id: Identifier, objective_reference: Identifier,

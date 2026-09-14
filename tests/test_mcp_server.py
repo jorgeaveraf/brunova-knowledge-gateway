@@ -534,6 +534,7 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
         "acquisition_get_discovery", "acquisition_request_discovery_planning",
         "acquisition_record_discovery_investigation",
         "acquisition_request_candidate_investigation",
+        "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
         "acquisition_resolve_accounts", "acquisition_retain_opportunity", "acquisition_pause_cycle",
         "acquisition_compose_wave", "acquisition_review_wave", "acquisition_request_reconsideration", "acquisition_stop_discovery",
         "acquisition_list_crm", "acquisition_request_pre_outbound_sync", "acquisition_request_crm_reconciliation",

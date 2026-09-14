@@ -217,6 +217,8 @@ def test_management_capability_objective_provenance_and_worker_boundary(monkeypa
 
 def test_all_management_tools_forward_only_narrow_contract(monkeypatch):
     cases = [
+        ('acquisition_begin_discovery_batch', 'DISCOVERY_CONTROL', dict(cycle_id='c',batch_id='batch2',policy_hash='a'*64,baseline_hash='b'*64,maximum_new=15,direction='Explore new companies while retaining prior uncertainty.')),
+        ('acquisition_finish_discovery_batch', 'DISCOVERY_CONTROL', dict(cycle_id='c',batch_id='batch2',policy_hash='a'*64,reason='Stop for explicit second-batch Management review.')),
         ('acquisition_request_pre_outbound_sync', 'REQUEST_PRE_OUTBOUND_SYNC', dict(cycle_id='c',account_id='a')),
         ('acquisition_request_crm_reconciliation', 'REQUEST_CRM_RECONCILIATION', dict(intent_id='i',expected_version=2)),
         ('acquisition_review_commercial_handoff', 'REVIEW_COMMERCIAL_HANDOFF', dict(handoff_id='h',decision='RECOMMEND',reason='Synthetic review')),
