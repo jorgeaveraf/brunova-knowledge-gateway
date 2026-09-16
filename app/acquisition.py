@@ -36,6 +36,9 @@ TOOLS = frozenset({
     "acquisition_get_activation_preflight",
     "acquisition_get_discovery",
     "acquisition_request_discovery_planning",
+    "acquisition_request_authenticated_research",
+    "acquisition_record_commercial_calibration",
+    "acquisition_record_work_plan",
     "acquisition_record_discovery_investigation",
     "acquisition_request_candidate_investigation",
     "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
@@ -153,6 +156,37 @@ def register_acquisition_tools(server: Any) -> None:
         """Request bounded Discovery planning/reorientation, not a company list or policy change. Read the exact current policy first; explain direction, then use an admitted DISCOVERY_CONTROL objective binding this request. Requires a separately authorized ACTIVE Cycle with standing Discovery scope. Does not activate it, bypass cadence, resolve identities by fiat, qualify companies, or call sources directly. WAITING means committed direction, not completed search. Existing pending work must finish/reconcile first."""
         return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
             "operation": "REQUEST_PLANNING", "cycleId": cycle_id, "policyHash": policy_hash, "direction": direction})
+
+    @server.tool()
+    async def acquisition_request_authenticated_research(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            uri: Annotated[str, Field(min_length=10, max_length=500)],
+            surface: Literal["LINKEDIN", "FACEBOOK", "AUTHENTICATED_RESEARCH_SERVICE"],
+            evidence_expected: Annotated[str, Field(min_length=10, max_length=500)]) -> CallToolResult:
+        """Request one read-only authenticated capability proof in the exact Jorge browser profile. This is calibration evidence, never prospect evidence, and cannot like, follow, message, connect, submit, publish or admit an Account. Requires an exact admitted DISCOVERY_CONTROL objective; the Engine creates a leased WorkItem, records a minimized receipt and cleans up its owned tab/window."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "REQUEST_AUTHENTICATED_RESEARCH", "cycleId": cycle_id, "policyHash": policy_hash,
+            "profile": "Jorge", "purpose": "CAPABILITY_CALIBRATION_ONLY", "uri": uri,
+            "surface": surface, "evidenceExpected": evidence_expected})
+
+    @server.tool()
+    async def acquisition_record_commercial_calibration(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            model_version: Annotated[str, Field(min_length=1, max_length=100)], reviews: list[dict[str, Any]]) -> CallToolResult:
+        """Record Pancracio's independent dual-lens review for the complete current candidate set. Strict Engine state and conversation-worthiness remain separate; every review must state internalNeed UNKNOWN, a material falsifier and an outreach learning goal. This is interpretation only: no admission, outreach, score override or source mutation."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_COMMERCIAL_CALIBRATION", "cycleId": cycle_id, "policyHash": policy_hash,
+            "modelVersion": model_version, "reviews": reviews})
+
+    @server.tool()
+    async def acquisition_record_work_plan(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            expires_at: str, rationale: Annotated[str, Field(min_length=20, max_length=2000)],
+            inventory: dict[str, Any], items: list[dict[str, Any]]) -> CallToolResult:
+        """Propose the smallest expiring Today/Next acquisition work allocation over authoritative inventory. Company, Job and Social are evidence dimensions, not additive scores. Broad Discovery remains denied while paused; each item needs a target, expected information gain, budget and stop condition. The durable result awaits Management and grants no autonomous execution."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_WORK_PLAN", "cycleId": cycle_id, "policyHash": policy_hash,
+            "expiresAt": expires_at, "rationale": rationale, "inventory": inventory, "items": items})
 
     @server.tool()
     async def acquisition_resolve_accounts(cycle_id: Identifier,
