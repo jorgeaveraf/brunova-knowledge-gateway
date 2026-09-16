@@ -39,6 +39,9 @@ TOOLS = frozenset({
     "acquisition_request_authenticated_research",
     "acquisition_record_commercial_calibration",
     "acquisition_record_work_plan",
+    "acquisition_approve_conversation_worthiness",
+    "acquisition_approve_work_plan",
+    "acquisition_record_allocation_outcomes",
     "acquisition_record_discovery_investigation",
     "acquisition_request_candidate_investigation",
     "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
@@ -187,6 +190,33 @@ def register_acquisition_tools(server: Any) -> None:
         return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
             "operation": "RECORD_WORK_PLAN", "cycleId": cycle_id, "policyHash": policy_hash,
             "expiresAt": expires_at, "rationale": rationale, "inventory": inventory, "items": items})
+
+    @server.tool()
+    async def acquisition_approve_conversation_worthiness(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            semantic_version: Literal["1"], definition: dict[str, Any]) -> CallToolResult:
+        """Integrate the Human-approved conversation-worthiness semantic policy beside immutable Cycle v3. This records no score, Account admission, qualification, contact or outreach authority. Internal need remains UNKNOWN by default and the exact strict path is unchanged."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "APPROVE_CONVERSATION_WORTHINESS", "cycleId": cycle_id,
+            "policyHash": policy_hash, "semanticVersion": semantic_version, "definition": definition})
+
+    @server.tool()
+    async def acquisition_approve_work_plan(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            plan_id: Identifier, semantic_version: Literal["1"], choices: list[dict[str, Any]]) -> CallToolResult:
+        """Approve one current expiring work plan after comparing Company, Job and Social for every item. Each choice binds an existing candidate, selected dimension, exact future investigation command, URLs, budget and stop condition. It does not itself create WorkItems or resume broad Discovery."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "APPROVE_WORK_PLAN", "cycleId": cycle_id, "policyHash": policy_hash,
+            "planId": plan_id, "semanticVersion": semantic_version, "choices": choices})
+
+    @server.tool()
+    async def acquisition_record_allocation_outcomes(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, policy_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+            plan_id: Identifier, outcomes: list[dict[str, Any]]) -> CallToolResult:
+        """Record Pancracio's bounded post-execution BEFORE/WORK/AFTER and allocator review for every approved item. The Engine verifies exact terminal WorkItems and actual request budgets. This may reconsider conversation-worthiness but never changes strict policy, resumes Discovery or authorizes outreach."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_ALLOCATION_OUTCOMES", "cycleId": cycle_id,
+            "policyHash": policy_hash, "planId": plan_id, "outcomes": outcomes})
 
     @server.tool()
     async def acquisition_resolve_accounts(cycle_id: Identifier,
