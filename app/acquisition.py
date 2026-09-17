@@ -47,6 +47,8 @@ TOOLS = frozenset({
     "acquisition_record_target_resolution_direction",
     "acquisition_record_target_resolution_result",
     "acquisition_record_copy_review",
+    "acquisition_record_7eb2_decisions_and_draft",
+    "acquisition_authorize_7eb2_scania_attempt_1",
     "acquisition_record_discovery_investigation",
     "acquisition_request_candidate_investigation",
     "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
@@ -275,6 +277,29 @@ def register_acquisition_tools(server: Any) -> None:
         """Persist Pancracio's independent 7E-B.1a final-copy review after all three resolution results and the immutable v5 package exist. effectsAuthorized must be false; this cannot start 7E-B.2 or execute outreach."""
         return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
             "operation": "RECORD_COPY_REVIEW", "waveId": wave_id, "review": review})
+
+    @server.tool()
+    async def acquisition_record_7eb2_decisions_and_draft(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, wave_id: Identifier, subject: Annotated[str, Field(min_length=1, max_length=160)],
+            text: Annotated[str, Field(min_length=1, max_length=4000)], claims: list[dict[str, Any]]) -> CallToolResult:
+        """Record the exact Human 7E-B.2 decisions (Scania Attempt 1 Email approved; Watsco HOLD; Lumexa HOLD_CONTACTPOINT) and immutable Scania message version 3. No effect is created by this step."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_7EB2_DECISIONS_AND_DRAFT", "cycleId": cycle_id, "waveId": wave_id,
+            "humanActor": "jorgeaveraf", "scaniaDecision": "APPROVE_ATTEMPT_1", "watscoDecision": "HOLD",
+            "lumexaDecision": "HOLD_CONTACTPOINT", "subject": subject, "text": text, "claims": claims,
+            "unsupportedClaims": 0, "claimValidationErrors": [], "humanQualityErrors": []})
+
+    @server.tool()
+    async def acquisition_authorize_7eb2_scania_attempt_1(command_id: Identifier, objective_reference: Identifier,
+            expected_binding_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")], authorization_expires_at: str,
+            correlation_id_value: Identifier) -> CallToolResult:
+        """Create the one exact Human EffectAuthorization and durable EffectIntent for Scania México Attempt 1 by Email after fresh preflight. It cannot authorize Attempt 2 or another target/channel; execution still revalidates and consumes a one-use gate before Gmail."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "AUTHORIZE_7EB2_SCANIA_ATTEMPT_1", "humanActor": "jorgeaveraf",
+            "candidateId": "candidate_03c9659012cff866a06b557c0f81c4bfebcedbbb467852dde72a15ab00c97129",
+            "channel": "EMAIL", "attempt": 1, "recipient": "alejandro.mondragon@scania.com",
+            "sender": "brunova@brunova.mx", "displayFrom": "Brunova", "expectedBindingHash": expected_binding_hash,
+            "authorizationExpiresAt": authorization_expires_at, "correlationId": correlation_id_value})
 
     @server.tool()
     async def acquisition_resolve_accounts(cycle_id: Identifier,
