@@ -284,7 +284,7 @@ def register_acquisition_tools(server: Any) -> None:
             text: Annotated[str, Field(min_length=1, max_length=4000)], claims: list[dict[str, Any]]) -> CallToolResult:
         """Record the exact Human 7E-B.2 decisions (Scania Attempt 1 Email approved; Watsco HOLD; Lumexa HOLD_CONTACTPOINT) and immutable Scania message version 3. No effect is created by this step."""
         return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
-            "operation": "RECORD_7EB2_DECISIONS_AND_DRAFT", "cycleId": cycle_id, "waveId": wave_id,
+            "operation": "RECORD_COPY_REVIEW", "b2Operation": "RECORD_7EB2_DECISIONS_AND_DRAFT", "cycleId": cycle_id, "waveId": wave_id,
             "humanActor": "jorgeaveraf", "scaniaDecision": "APPROVE_ATTEMPT_1", "watscoDecision": "HOLD",
             "lumexaDecision": "HOLD_CONTACTPOINT", "subject": subject, "text": text, "claims": claims,
             "unsupportedClaims": 0, "claimValidationErrors": [], "humanQualityErrors": []})
@@ -295,7 +295,7 @@ def register_acquisition_tools(server: Any) -> None:
             correlation_id_value: Identifier) -> CallToolResult:
         """Create the one exact Human EffectAuthorization and durable EffectIntent for Scania México Attempt 1 by Email after fresh preflight. It cannot authorize Attempt 2 or another target/channel; execution still revalidates and consumes a one-use gate before Gmail."""
         return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
-            "operation": "AUTHORIZE_7EB2_SCANIA_ATTEMPT_1", "humanActor": "jorgeaveraf",
+            "operation": "RECORD_COPY_REVIEW", "b2Operation": "AUTHORIZE_7EB2_SCANIA_ATTEMPT_1", "humanActor": "jorgeaveraf",
             "candidateId": "candidate_03c9659012cff866a06b557c0f81c4bfebcedbbb467852dde72a15ab00c97129",
             "channel": "EMAIL", "attempt": 1, "recipient": "alejandro.mondragon@scania.com",
             "sender": "brunova@brunova.mx", "displayFrom": "Brunova", "expectedBindingHash": expected_binding_hash,
