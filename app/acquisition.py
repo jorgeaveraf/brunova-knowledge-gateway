@@ -44,6 +44,9 @@ TOOLS = frozenset({
     "acquisition_record_allocation_outcomes",
     "acquisition_record_exploratory_wave",
     "acquisition_record_exploratory_wave_review",
+    "acquisition_record_target_resolution_direction",
+    "acquisition_record_target_resolution_result",
+    "acquisition_record_copy_review",
     "acquisition_record_discovery_investigation",
     "acquisition_request_candidate_investigation",
     "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
@@ -237,6 +240,41 @@ def register_acquisition_tools(server: Any) -> None:
         """Persist Pancracio's independent review of a complete proposed learning wave: selection, learning value, Person identity, channel justification, epistemic honesty, creepiness/generic-copy risk, stop conditions and what silence cannot establish. effectsAuthorized must be false. Review cannot authorize or execute outreach."""
         return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
             "operation": "RECORD_EXPLORATORY_REVIEW", "waveId": wave_id, "review": review})
+
+    @server.tool()
+    async def acquisition_record_target_resolution_direction(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, source_wave_id: Identifier, rationale: Annotated[str, Field(min_length=20, max_length=2000)],
+            items: list[dict[str, Any]]) -> CallToolResult:
+        """Persist Pancracio's bounded 7E-B.1a direction for exactly Scania, Watsco and Lumexa in that priority order. Creates three non-effect TARGET_CONTACT_RESOLUTION WorkItems only; broad Discovery stays paused, the fourth slot stays empty and outreach authority remains NONE."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_TARGET_RESOLUTION_DIRECTION", "cycleId": cycle_id,
+            "sourceWaveId": source_wave_id, "rationale": rationale, "items": items,
+            "fourthSlotEmpty": True, "broadDiscoveryPaused": True, "outreachAuthority": "NONE"})
+
+    @server.tool()
+    async def acquisition_record_target_resolution_result(command_id: Identifier, objective_reference: Identifier,
+            work_item_id: Identifier, person_status: Literal["PROBLEM_OWNER", "ROUTING_PERSON", "UNRESOLVED"],
+            person: dict[str, Any], contact_points: list[dict[str, Any]],
+            channel_status: Literal["SUPPORTED", "CONTACT_UNRESOLVED", "AUTH_REQUIRED", "CHANNEL_POLICY_BLOCKED"],
+            readiness: Literal["READY_FOR_HUMAN_EFFECT_REVIEW", "HOLD_OWNER", "HOLD_CONTACTPOINT", "HOLD_CHANNEL", "HOLD_MESSAGE", "REMOVE", "RETAIN"],
+            findings: Annotated[str, Field(min_length=20, max_length=4000)], sources: list[dict[str, Any]],
+            jorge_profile_usage: dict[str, Any], actual_requests: Annotated[int, Field(ge=0, le=5)],
+            actual_minutes: Annotated[int, Field(ge=0, le=60)], stop_reason: Annotated[str, Field(min_length=10, max_length=2000)],
+            pancracio_readback: Annotated[str, Field(min_length=20, max_length=3000)]) -> CallToolResult:
+        """Reconcile one claimed target-resolution WorkItem after bounded public/authenticated read research. Preserves Person/ContactPoint provenance and exact READY/HOLD result. It cannot create outreach authority, an EffectIntent or an Account."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_TARGET_RESOLUTION_RESULT", "workItemId": work_item_id,
+            "personStatus": person_status, "person": person, "contactPoints": contact_points,
+            "channelStatus": channel_status, "readiness": readiness, "findings": findings, "sources": sources,
+            "jorgeProfileUsage": jorge_profile_usage, "actualRequests": actual_requests, "actualMinutes": actual_minutes,
+            "stopReason": stop_reason, "pancracioReadback": pancracio_readback, "effectCreated": False})
+
+    @server.tool()
+    async def acquisition_record_copy_review(command_id: Identifier, objective_reference: Identifier,
+            wave_id: Identifier, review: dict[str, Any]) -> CallToolResult:
+        """Persist Pancracio's independent 7E-B.1a final-copy review after all three resolution results and the immutable v5 package exist. effectsAuthorized must be false; this cannot start 7E-B.2 or execute outreach."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_COPY_REVIEW", "waveId": wave_id, "review": review})
 
     @server.tool()
     async def acquisition_resolve_accounts(cycle_id: Identifier,

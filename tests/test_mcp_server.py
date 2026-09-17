@@ -536,6 +536,8 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
         "acquisition_record_work_plan", "acquisition_approve_conversation_worthiness",
         "acquisition_approve_work_plan", "acquisition_record_allocation_outcomes",
         "acquisition_record_exploratory_wave", "acquisition_record_exploratory_wave_review",
+        "acquisition_record_target_resolution_direction", "acquisition_record_target_resolution_result",
+        "acquisition_record_copy_review",
         "acquisition_record_discovery_investigation",
         "acquisition_request_candidate_investigation",
         "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
