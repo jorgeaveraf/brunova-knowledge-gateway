@@ -42,6 +42,8 @@ TOOLS = frozenset({
     "acquisition_approve_conversation_worthiness",
     "acquisition_approve_work_plan",
     "acquisition_record_allocation_outcomes",
+    "acquisition_record_exploratory_wave",
+    "acquisition_record_exploratory_wave_review",
     "acquisition_record_discovery_investigation",
     "acquisition_request_candidate_investigation",
     "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
@@ -217,6 +219,24 @@ def register_acquisition_tools(server: Any) -> None:
         return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
             "operation": "RECORD_ALLOCATION_OUTCOMES", "cycleId": cycle_id,
             "policyHash": policy_hash, "planId": plan_id, "outcomes": outcomes})
+
+    @server.tool()
+    async def acquisition_record_exploratory_wave(command_id: Identifier, objective_reference: Identifier,
+            cycle_id: Identifier, wave_id: Identifier, version: Annotated[int, Field(ge=1)],
+            evidence_snapshot: dict[str, Any], all_candidates: list[dict[str, Any]], targets: list[dict[str, Any]]) -> CallToolResult:
+        """Persist Pancracio's complete, non-executable 7E-B.1 exploratory learning-wave proposal. It must consider all 16 current candidates and select at most four CandidateOrganizations, each with an UNKNOWN internal need, falsifiable learning goal, supported Person/ContactPoints, channel-specific drafts, one shared cross-channel attempt budget and no automatic escalation. This never creates an Account, authorization, EffectIntent, message, provider mutation or 7E-B.2 start."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_EXPLORATORY_WAVE", "cycleId": cycle_id, "waveId": wave_id,
+            "version": version, "targetClass": "EXPLORATORY_CANDIDATE_LEARNING", "semanticVersion": "1",
+            "evidenceSnapshot": evidence_snapshot, "allCandidates": all_candidates, "targets": targets,
+            "executable": False, "outreachAuthority": "NONE"})
+
+    @server.tool()
+    async def acquisition_record_exploratory_wave_review(command_id: Identifier, objective_reference: Identifier,
+            wave_id: Identifier, review: dict[str, Any]) -> CallToolResult:
+        """Persist Pancracio's independent review of a complete proposed learning wave: selection, learning value, Person identity, channel justification, epistemic honesty, creepiness/generic-copy risk, stop conditions and what silence cannot establish. effectsAuthorized must be false. Review cannot authorize or execute outreach."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RECORD_EXPLORATORY_REVIEW", "waveId": wave_id, "review": review})
 
     @server.tool()
     async def acquisition_resolve_accounts(cycle_id: Identifier,

@@ -223,6 +223,8 @@ def test_all_management_tools_forward_only_narrow_contract(monkeypatch):
         ('acquisition_approve_conversation_worthiness', 'DISCOVERY_CONTROL', dict(cycle_id='c',policy_hash='a'*64,semantic_version='1',definition={'internalNeedDefault':'UNKNOWN'})),
         ('acquisition_approve_work_plan', 'DISCOVERY_CONTROL', dict(cycle_id='c',policy_hash='a'*64,plan_id='plan-1',semantic_version='1',choices=[{'position':1}])),
         ('acquisition_record_allocation_outcomes', 'DISCOVERY_CONTROL', dict(cycle_id='c',policy_hash='a'*64,plan_id='plan-1',outcomes=[{'position':1}])),
+        ('acquisition_record_exploratory_wave', 'DISCOVERY_CONTROL', dict(cycle_id='c',wave_id='wave-1',version=1,evidence_snapshot={'candidateCount':16},all_candidates=[{'candidateId':str(i)} for i in range(16)],targets=[{'position':1}])),
+        ('acquisition_record_exploratory_wave_review', 'DISCOVERY_CONTROL', dict(wave_id='wave-1',review={'effectsAuthorized':False})),
         ('acquisition_begin_discovery_batch', 'DISCOVERY_CONTROL', dict(cycle_id='c',batch_id='batch2',policy_hash='a'*64,baseline_hash='b'*64,maximum_new=15,direction='Explore new companies while retaining prior uncertainty.')),
         ('acquisition_finish_discovery_batch', 'DISCOVERY_CONTROL', dict(cycle_id='c',batch_id='batch2',policy_hash='a'*64,reason='Stop for explicit second-batch Management review.')),
         ('acquisition_request_pre_outbound_sync', 'REQUEST_PRE_OUTBOUND_SYNC', dict(cycle_id='c',account_id='a')),
