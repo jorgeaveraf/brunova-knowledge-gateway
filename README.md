@@ -1,5 +1,13 @@
 # Brunova Knowledge Gateway
 
+## 7E-C.4 Management workspace tools
+
+`acquisition_archive_candidate` and `acquisition_restore_candidate` are narrow
+Management tools over Gateway → Portal Backend → Engine. Both require an exact
+admitted `DISCOVERY_CONTROL` objective and preserve `PANCRACIO_GATEWAY`
+provenance. They remove or return a Candidate only in the active Management
+workspace; they never delete, reject, merge, qualify, admit, schedule or contact.
+
 ## Acquisition Cycle control — 7C
 
 Management tools `acquisition_get_cycle_policy`, `acquisition_list_opportunity_pool`

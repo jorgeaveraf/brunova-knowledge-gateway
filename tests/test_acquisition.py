@@ -217,6 +217,8 @@ def test_management_capability_objective_provenance_and_worker_boundary(monkeypa
 
 def test_all_management_tools_forward_only_narrow_contract(monkeypatch):
     cases = [
+        ('acquisition_archive_candidate', 'DISCOVERY_CONTROL', dict(candidate_id='candidate-1',reason='Remove from the active workspace while preserving evidence.')),
+        ('acquisition_restore_candidate', 'DISCOVERY_CONTROL', dict(candidate_id='candidate-1',reason='Return to the active workspace for bounded review.')),
         ('acquisition_request_authenticated_research', 'DISCOVERY_CONTROL', dict(cycle_id='c',policy_hash='a'*64,uri='https://www.linkedin.com/feed/',surface='LINKEDIN',evidence_expected='Authenticated feed navigation is rendered read-only.')),
         ('acquisition_record_commercial_calibration', 'DISCOVERY_CONTROL', dict(cycle_id='c',policy_hash='a'*64,model_version='pancracio-calibration-v1',reviews=[{'candidateId':'candidate-1','internalNeed':'UNKNOWN'}])),
         ('acquisition_record_work_plan', 'DISCOVERY_CONTROL', dict(cycle_id='c',policy_hash='a'*64,expires_at='2026-09-17T12:00:00Z',rationale='Resolve the highest-value current uncertainty first.',inventory={'candidates':1},items=[{'workClass':'COMPANY_ENRICH'}])),

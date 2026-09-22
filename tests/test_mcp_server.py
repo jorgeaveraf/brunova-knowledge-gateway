@@ -532,6 +532,7 @@ def test_mcp_exposes_only_governed_tools(monkeypatch):
         "acquisition_get_operating_model",
         "acquisition_get_activation_preflight",
         "acquisition_get_discovery", "acquisition_request_discovery_planning",
+        "acquisition_archive_candidate", "acquisition_restore_candidate",
         "acquisition_request_authenticated_research", "acquisition_record_commercial_calibration",
         "acquisition_record_work_plan", "acquisition_approve_conversation_worthiness",
         "acquisition_approve_work_plan", "acquisition_record_allocation_outcomes",

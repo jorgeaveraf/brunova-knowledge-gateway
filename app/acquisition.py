@@ -52,6 +52,7 @@ TOOLS = frozenset({
     "acquisition_record_discovery_investigation",
     "acquisition_request_candidate_investigation",
     "acquisition_begin_discovery_batch", "acquisition_finish_discovery_batch",
+    "acquisition_archive_candidate", "acquisition_restore_candidate",
 })
 
 
@@ -113,6 +114,20 @@ def register_acquisition_tools(server: Any) -> None:
     async def acquisition_get_discovery() -> CallToolResult:
         """Inspect authoritative Discovery planning, source health/yield and durable candidates BEFORE Account admission. Explain what was observed, unresolved identity, missing evidence and pending work; identity is not qualification. Counts and bounded displayed samples differ. Source failure/empty results do not prove absence of market opportunity. No company list is needed to begin an authorized active Cycle; no activation or provider action occurs here."""
         return await portal_request("GET", "/discovery")
+
+    @server.tool()
+    async def acquisition_archive_candidate(command_id: Identifier, objective_reference: Identifier,
+            candidate_id: Identifier, reason: Annotated[str, Field(min_length=10, max_length=1000)]) -> CallToolResult:
+        """Remove one exact Candidate from the active Management workspace without deleting, rejecting, merging, or rewriting its evidence. Requires an admitted DISCOVERY_CONTROL objective bound to the exact request. The immutable archive event preserves actor, reason and history; no work, outreach, CRM or provider effect is created."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "ARCHIVE_CANDIDATE", "candidateId": candidate_id, "reason": reason})
+
+    @server.tool()
+    async def acquisition_restore_candidate(command_id: Identifier, objective_reference: Identifier,
+            candidate_id: Identifier, reason: Annotated[str, Field(min_length=10, max_length=1000)]) -> CallToolResult:
+        """Restore one exact archived Candidate to the active Management workspace while preserving its archive history. Requires an admitted DISCOVERY_CONTROL objective bound to the exact request. Restoration grants no qualification, admission, work or outreach authority."""
+        return await management("DISCOVERY_CONTROL", command_id, objective_reference, {
+            "operation": "RESTORE_CANDIDATE", "candidateId": candidate_id, "reason": reason})
 
     async def management(operation, command_id, objective_reference, request, wave_id=None):
         path = f"/management-waves/{wave_id}/actions/{operation}" if wave_id else "/management-actions/" + operation
