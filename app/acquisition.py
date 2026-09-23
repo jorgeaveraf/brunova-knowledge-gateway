@@ -464,12 +464,14 @@ def register_acquisition_tools(server: Any) -> None:
             "attentionId": attention_id, "expectedVersion": expected_version, "disposition": disposition, "reason": reason, "notes": notes}, wave_id)
 
     @server.tool()
-    async def acquisition_authorize_controlled_effect(command_id: Identifier, objective_reference: Identifier,
+    async def acquisition_authorize_controlled_effect(command_id: Identifier,
             message_id: Identifier, target_id: Identifier, sender_id: Identifier,
             expected_binding_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
-            expires_at: Annotated[str, Field(min_length=20,max_length=40)], wave_id: Identifier | None = None) -> CallToolResult:
-        """Authorize only an exact controlled effect covered by an admitted objective and current policy. This may enqueue real controlled work; never invoke without applicable Human authority. Commercial transport remains unapproved. Not a send or transport tool."""
-        return await management("AUTHORIZE_EFFECT", command_id, objective_reference, {
+            expires_at: Annotated[str, Field(min_length=20,max_length=40)],
+            objective_reference: Identifier | None = None, wave_id: Identifier | None = None) -> CallToolResult:
+        """Submit one exact Email effect to Engine validation. Under the active Human production mandate, Pancracio may derive a short-lived exact objective; there is never blanket send authority or a provider bypass."""
+        exact_objective = objective_reference or f"continuous-effect-{command_id}"
+        return await management("AUTHORIZE_EFFECT", command_id, exact_objective, {
             "messageId": message_id, "targetId": target_id, "senderId": sender_id,
             "expectedBindingHash": expected_binding_hash, "expiresAt": expires_at}, wave_id)
 
